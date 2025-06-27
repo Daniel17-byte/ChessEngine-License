@@ -1,0 +1,166 @@
+
+networks:
+  my-network:
+    driver: bridge
+
+volumes:
+  db_users_data:
+  db_stats_data:
+  db_game_data:
+  rabbitmq_data:
+  maven_cache:
+
+services:
+  rabbitmq:
+    image: rabbitmq:3-management
+    container_name: rabbitmq
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_DEFAULT_USER}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_DEFAULT_PASS}
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    networks:
+      - my-network
+
+  users-be:
+    build:
+      context: ./users-be
+      dockerfile: Dockerfile
+    container_name: users-be
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:mysql://db_users:3306/users
+      SPRING_DATASOURCE_USERNAME: ${SPRING_DATASOURCE_USERNAME}
+      SPRING_DATASOURCE_PASSWORD: ${SPRING_DATASOURCE_PASSWORD}
+    depends_on:
+      - db_users
+    volumes:
+      - maven_cache:/root/.m2
+    networks:
+      - my-network
+
+  game-be:
+    build:
+      context: ./game-be
+      dockerfile: Dockerfile
+    container_name: game-be
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:mysql://db_game:3306/game
+      SPRING_DATASOURCE_USERNAME: ${SPRING_DATASOURCE_USERNAME}
+      SPRING_DATASOURCE_PASSWORD: ${SPRING_DATASOURCE_PASSWORD}
+      SPRING_RABBITMQ_HOST: rabbitmq
+    depends_on:
+      - db_game
+      - ai-engine
+    volumes:
+      - maven_cache:/root/.m2
+    networks:
+      - my-network
+
+  stats-be:
+    build:
+      context: ./stats-be
+      dockerfile: Dockerfile
+    container_name: stats-be
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:mysql://db_stats:3306/stats
+      SPRING_DATASOURCE_USERNAME: ${SPRING_DATASOURCE_USERNAME}
+      SPRING_DATASOURCE_PASSWORD: ${SPRING_DATASOURCE_PASSWORD}
+    depends_on:
+      - db_stats
+    volumes:
+      - maven_cache:/root/.m2
+    networks:
+      - my-network
+
+  matchmaking-be:
+    build:
+      context: ./matchmaking-be
+      dockerfile: Dockerfile
+    container_name: matchmaking-be
+    networks:
+      - my-network
+
+  ai-engine:
+    build:
+      context: ./ai-engine
+      dockerfile: Dockerfile
+    container_name: ai-engine
+    ports:
+      - "5001:5000"
+    networks:
+      - my-network
+
+  chess-web-ui:
+    build:
+      context: ./chess-web-ui
+      dockerfile: Dockerfile
+    container_name: chess-web-ui
+    ports:
+      - "3000:3000"
+    depends_on:
+      - gateway-api
+    networks:
+      - my-network
+
+  gateway-api:
+    build:
+      context: ./gateway-api
+      dockerfile: Dockerfile
+    container_name: gateway-api
+    ports:
+      - "8080:8080"
+    depends_on:
+      - users-be
+      - game-be
+      - stats-be
+    environment:
+      SPRING_RABBITMQ_HOST: rabbitmq
+    volumes:
+      - maven_cache:/root/.m2
+    networks:
+      - my-network
+
+  db_users:
+    image: mysql:8.0.4
+    container_name: db_users
+    platform: linux/amd64
+    environment:
+      MYSQL_DATABASE: users
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+    ports:
+      - "3307:3306"
+    volumes:
+      - db_users_data:/var/lib/mysql
+    networks:
+      - my-network
+
+  db_game:
+    image: mysql:8.0.4
+    container_name: db_game
+    platform: linux/amd64
+    environment:
+      MYSQL_DATABASE: game
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+    ports:
+      - "3310:3306"
+    volumes:
+      - db_game_data:/var/lib/mysql
+    networks:
+      - my-network
+
+  db_stats:
+    image: mysql:8.0.4
+    container_name: db_stats
+    platform: linux/amd64
+    environment:
+      MYSQL_DATABASE: stats
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+    ports:
+      - "3309:3306"
+    volumes:
+      - db_stats_data:/var/lib/mysql
+    networks:
+      - my-network

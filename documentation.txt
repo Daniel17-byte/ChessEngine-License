@@ -1,0 +1,78 @@
+
+Structura modulară a proiectului
+
+Arhitectura este organizată pe microservicii, pentru a obține:
+- Separare clară a responsabilităților
+- Scalabilitate pe termen lung
+- Ușurință în testare, mentenanță și extindere
+
+──────────────────────────────────────────────────────
+🔹 ai-engine (Python)
+Rol: Motorul de inteligență artificială (AI) care decide mutările pentru jucătorul automat.
+
+De ce este separat:
+- AI-ul este dezvoltat în Python (limbajul standard pentru Machine Learning)
+- Poate folosi librării specializate ca python-chess, PyTorch, TensorFlow
+- Poate fi antrenat separat și optimizat independent de restul aplicației
+
+──────────────────────────────────────────────────────
+🔹 chess-web-ui (React/JS)
+Rol: Interfața grafică a aplicației, cu care utilizatorii interacționează.
+
+Motivație:
+- Separă complet frontend-ul de backend
+- Permite design modern, interactiv și responsive
+- Comunicarea se face prin API-uri REST, deci poate fi înlocuit sau extins (ex: cu o aplicație mobilă)
+
+──────────────────────────────────────────────────────
+🔹 game-be (Java, Spring Boot)
+Rol: Gestiunea logicii de șah: mutări, validări, turn-based logic, salvare stări.
+
+De ce e separat:
+- Este centrul aplicației: controlează desfășurarea jocului
+- Trimite tabla către AI și primește mutarea sugerată
+- Garantează reguli corecte și integritate logică
+
+──────────────────────────────────────────────────────
+🔹 gateway-api (Java, Spring Boot)
+Rol: Un punct unic de intrare în sistem, care rutează toate cererile către microserviciile corespunzătoare.
+
+Motivație:
+- Permite securitate centralizată (JWT, CORS, rate limiting)
+- Ascunde complexitatea internă a arhitecturii
+- Este un pattern standard în arhitectura de tip microservicii
+
+──────────────────────────────────────────────────────
+🔹 matchmaking (Java, Spring Boot)
+Rol: Creează automat partide între jucători disponibili (1v1) sau împotriva AI-ului.
+
+Motivație:
+- Este un serviciu de orchestrare dedicat interacțiunii dintre utilizatori
+- Separarea permite upgrade-uri viitoare (ex: matchmaking bazat pe ELO, timp, etc.)
+- Poate integra WebSocket pentru viitorul multiplayer în timp real
+
+──────────────────────────────────────────────────────
+🔹 stats-be (Java, Spring Boot)
+Rol: Calculează scoruri, win/loss, rating ELO, leaderboard.
+
+Motivație:
+- Separă complet analiza statistică de logica de joc
+- Poate include reguli diferite de calcul ELO
+- Extensibil cu module de analiză sau istoric
+
+──────────────────────────────────────────────────────
+🔹 users-be (Java, Spring Boot)
+Rol: Gestionarea conturilor de utilizatori: înregistrare, login, profiluri, tokenuri JWT.
+
+Motivație:
+- Separă identitatea utilizatorului de restul logicii aplicației
+- Permite o eventuală integrare cu OAuth2 sau social login
+- Controlează accesul și autentificarea pentru restul sistemului
+
+──────────────────────────────────────────────────────
+Concluzie
+
+Structura modulară reflectă o arhitectură profesională, extensibilă și scalabilă, care respectă principiile:
+- Separation of Concerns (SoC)
+- Single Responsibility Principle (SRP)
+- Deploy independent – fiecare modul poate fi dezvoltat, testat și scalat separat
