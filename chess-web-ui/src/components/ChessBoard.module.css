@@ -1,0 +1,27 @@
+.board {
+    display: grid;
+    grid-template-rows: repeat(8, 60px);
+}
+
+.row {
+    display: grid;
+    grid-template-columns: repeat(8, 60px);
+}
+
+.cell {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    background-color: #f0d9b5;
+    border: 1px solid #999;
+    font-size: 30px;
+    cursor: pointer;
+}
+
+.cell:nth-child(even) {
+    background-color: #b58863;
+}
+
+.selected {
+    background-color: yellow !important;
+}
