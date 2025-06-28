@@ -1,3 +1,4 @@
+import torch
 import chess
 from ChessAI import ChessAI
 
@@ -7,6 +8,11 @@ class Game:
         self.vs_ai = vs_ai
         self.ai = ChessAI() if vs_ai else None
         self.turn = chess.WHITE  # true: white, false: black
+        if self.ai:
+            import torch.nn as nn
+            import torch
+            self.optimizer = torch.optim.Adam(self.ai.model.parameters(), lr=0.001)
+            self.loss_fn = nn.CrossEntropyLoss()
 
     def make_move(self, move_uci):
         ai_move = None
@@ -64,3 +70,35 @@ class Game:
 
     def is_game_over(self):
         return self.board.is_game_over()
+
+    def get_board_state_tensor(self):
+        piece_map = {
+            'P': 0, 'N': 1, 'B': 2, 'R': 3, 'Q': 4, 'K': 5,
+            'p': 6, 'n': 7, 'b': 8, 'r': 9, 'q': 10, 'k': 11
+        }
+        tensor = torch.zeros(12, 8, 8)
+
+        for square in chess.SQUARES:
+            piece = self.board.piece_at(square)
+            if piece:
+                idx = piece_map.get(piece.symbol(), None)
+                if idx is not None:
+                    row = 7 - chess.square_rank(square)
+                    col = chess.square_file(square)
+                    tensor[idx][row][col] = 1
+        return tensor.unsqueeze(0)
+
+    def get_fen(self):
+        return self.board.fen()
+
+    def get_last_move_uci(self):
+        if len(self.board.move_stack) == 0:
+            return None
+        return self.board.move_stack[-1].uci()
+
+    def get_fen_before_last_move(self):
+        if len(self.board.move_stack) == 0:
+            return None
+        temp_board = self.board.copy()
+        temp_board.pop()
+        return temp_board.fen()

@@ -36,6 +36,11 @@ def make_move():
         print("==============================")
         return jsonify({'error': 'No move provided'}), 400
     try:
+        # Save FEN before applying move for training
+        fen_before = None
+        if hasattr(game, "get_fen_before_last_move"):
+            fen_before = game.get_fen_before_last_move()
+
         success = game.make_move(move)
         print(f"✅ Player move valid: {success}")
 
@@ -46,6 +51,31 @@ def make_move():
 
         print("♟️  Player move applied.")
         print("📥  Current board FEN after player move:", game.get_board_fen())
+
+        # --- AI Training on Player Move ---
+        try:
+            from ChessNet import encode_fen
+            from ChessAI import ChessAI
+            import torch.nn as nn
+            import torch
+            if not hasattr(game, 'ai'):
+                game.ai = ChessAI()
+                game.optimizer = torch.optim.Adam(game.ai.model.parameters(), lr=0.001)
+                game.loss_fn = nn.CrossEntropyLoss()
+            if fen_before is not None:
+                input_tensor = encode_fen(fen_before).unsqueeze(0)
+                move_index = game.ai.move_to_index(move)
+                target = torch.tensor([move_index])
+                prediction = game.ai.model(input_tensor)
+                loss = game.loss_fn(prediction, target)
+                game.optimizer.zero_grad()
+                loss.backward()
+                game.optimizer.step()
+                print(f"🧠 Trained on move: {move}, Loss: {loss.item():.6f}")
+        except Exception as train_exc:
+            print(f"⚠️  Training step failed: {train_exc}")
+
+        # --- End AI Training ---
 
         if not game.is_game_over() and game.board.turn == chess.BLACK:
             print("🤖 AI is calculating move...")

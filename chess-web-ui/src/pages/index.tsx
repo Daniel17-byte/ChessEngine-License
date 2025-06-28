@@ -16,12 +16,14 @@ function HomeContent() {
     const { resetGame } = useChess();
 
     return (
-        <main style={{ padding: 20 }}>
+        <main style={{ padding: 20, display: "flex", flexDirection: "column", alignItems: "center" }}>
             <button onClick={resetGame} style={{ marginBottom: 20 }}>
                 ♻️ Resetează jocul
             </button>
             <h1>♟️ Joc de Șah cu AI</h1>
-            <ChessBoard />
+            <div style={{ display: "flex", justifyContent: "center" }}>
+                <ChessBoard />
+            </div>
         </main>
     );
 }

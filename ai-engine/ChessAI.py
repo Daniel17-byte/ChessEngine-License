@@ -3,11 +3,22 @@ import chess.engine
 import random
 import numpy as np
 from typing import Optional
+from ChessNet import ChessNet  # <-- adăugat
+import torch
 
 
 class ChessAI:
     def __init__(self):
         self.board = chess.Board()
+        self.model = ChessNet()
+        self.move_to_idx = {}
+        self.idx_to_move = []
+
+    def move_to_index(self, move_uci: str) -> int:
+        if move_uci not in self.move_to_idx:
+            self.move_to_idx[move_uci] = len(self.idx_to_move)
+            self.idx_to_move.append(move_uci)
+        return self.move_to_idx[move_uci]
 
     def select_move(self, board: chess.Board) -> Optional[chess.Move]:
         self.board = board
@@ -16,6 +27,14 @@ class ChessAI:
 
     def reset_board(self):
         self.board.reset()
+
+    def calculate_target(self, board_tensor):
+        # Calcul simplu al scorului poziției pe baza pieselor
+        piece_values = torch.tensor([1, 3, 3, 5, 9, 0, -1, -3, -3, -5, -9, 0], dtype=torch.float32)
+        # board_tensor: [1, 12, 8, 8]
+        material = board_tensor.squeeze(0).reshape(12, -1).sum(dim=1)
+        score = (material * piece_values).sum()
+        return score.unsqueeze(0)  # Tensor [1]
 
     def evaluate_board(self, board: chess.Board) -> int:
         """Material + mobility evaluation."""

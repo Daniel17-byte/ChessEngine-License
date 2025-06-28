@@ -18,10 +18,18 @@
     cursor: pointer;
 }
 
-.cell:nth-child(even) {
-    background-color: #b58863;
-}
-
 .selected {
     background-color: yellow !important;
+}
+
+.light {
+    background-color: #eeeed2;
+}
+
+.dark {
+    background-color: #769656;
+}
+
+.cell span {
+    text-shadow: 1px 1px 0 #000, -1px 1px 0 #000, 1px -1px 0 #000, -1px -1px 0 #000;
 }

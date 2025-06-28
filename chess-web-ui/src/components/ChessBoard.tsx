@@ -39,6 +39,10 @@ const ChessBoard: React.FC = () => {
         return `${file}${rank}`;
     };
 
+    const getCellColor = (rowIndex: number, colIndex: number) => {
+        return (rowIndex + colIndex) % 2 === 0 ? styles.light : styles.dark;
+    };
+
     const handleClick = async (row: number, col: number) => {
         if (isLoading) return;
         if (!selected) {
@@ -65,10 +69,15 @@ const ChessBoard: React.FC = () => {
                         return (
                             <div
                                 key={square}
-                                className={`${styles.cell} ${selectedClass}`}
+                                className={`${styles.cell} ${getCellColor(rowIndex, colIndex)} ${selectedClass}`}
                                 onClick={() => handleClick(rowIndex, colIndex)}
                             >
-                                {pieceSymbols[cell] || ""}
+                                <span style={{
+                                    color: cell === cell.toUpperCase() && cell ? "#fff" : "#000",
+                                    textShadow: cell === cell.toUpperCase() && cell ? "1px 1px 0 #000, -1px 1px 0 #000, 1px -1px 0 #000, -1px -1px 0 #000" : "none"
+                                }}>
+                                    {pieceSymbols[cell] || ""}
+                                </span>
                             </div>
                         );
                     })}

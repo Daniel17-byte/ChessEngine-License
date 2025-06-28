@@ -9,7 +9,8 @@ class ChessNet(nn.Module):
         self.fc1 = nn.Linear(773, 512)
         self.fc2 = nn.Linear(512, 256)
         self.fc3 = nn.Linear(256, 128)
-        self.out = nn.Linear(128, 1)  # Output: evaluation score of the position
+        # Output: logits over all possible legal moves (up to 4672 options)
+        self.out = nn.Linear(128, 4672)
 
     def forward(self, x):
         x = F.relu(self.fc1(x))
@@ -19,17 +20,14 @@ class ChessNet(nn.Module):
 
 
 def encode_fen(fen: str) -> torch.Tensor:
-    # Placeholder encoder: convert a FEN to a 773-bit tensor (example format)
-    # You should replace this with proper one-hot encoding of FEN board state
-    # For now, returns a random tensor for testing
-    return torch.randn(773)
+    # Dummy encoder: returns zero tensor with correct shape
+    return torch.zeros(773)
 
 
 def evaluate_position(model, fen: str) -> float:
     model.eval()
     with torch.no_grad():
-        input_tensor = encode_fen(fen)
-        input_tensor = input_tensor.unsqueeze(0)  # Add batch dimension
+        input_tensor = encode_fen(fen).unsqueeze(0)  # Ensure correct input encoding
         score = model(input_tensor)
         return score.item()
 
