@@ -33,7 +33,6 @@ class ChessAI:
 
     def select_move(self, board: chess.Board) -> Optional[chess.Move]:
         self.board = board
-        print(f"♟️  AI received board FEN: {board.fen()}")
         return self.get_best_move_from_model(board)
 
     def reset_board(self):

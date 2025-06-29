@@ -26,13 +26,13 @@ optimizer_white = torch.optim.Adam(ai_white.model.parameters(), lr=0.001)
 optimizer_black = torch.optim.Adam(ai_black.model.parameters(), lr=0.001)
 loss_fn = torch.nn.CrossEntropyLoss()
 
-num_epochs = 2000
+num_epochs = 10000
 
 for epoch in range(num_epochs):
     print(f"\n🌀 === Epoch {epoch + 1}/{num_epochs} ===")
     game.reset()
 
-    max_moves_per_game = 40
+    max_moves_per_game = 20
     move_count = 0
 
     while not game.is_game_over() and move_count < max_moves_per_game:
@@ -45,6 +45,7 @@ for epoch in range(num_epochs):
             player = "Negru"
 
         move = current_ai.get_best_move_from_model(game.board)
+        # print(f"🔁 {player} mută: {move.uci()}")
 
         if move:
             board_state = encode_fen(game.get_fen()).unsqueeze(0)
@@ -69,8 +70,8 @@ for epoch in range(num_epochs):
                 loss.backward()
                 optimizer_black.step()
 
-    print("🏁 Joc terminat.")
+    if epoch  % 100 == 0:
+        print(f"📉 Pierdere (loss): {loss.item():.4f}")
 
     if (epoch + 1) % 2 == 0:
-        torch.save(ai_black.model.state_dict(), "trained_model.pth")
-        print("💾 Model salvat în 'trained_model.pth'")
+        torch.save(ai_white.model.state_dict(), "trained_model.pth")

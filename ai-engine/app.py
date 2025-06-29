@@ -1,5 +1,7 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
+from sympy.strategies import null_safe
+
 from Game import Game
 import chess
 
@@ -71,7 +73,7 @@ def make_move():
             return jsonify({'error': 'Invalid move', 'board': game.get_board_fen()}), 400
 
         print("♟️  Player move applied.")
-        print("📥  Current board FEN after player move:", game.get_board_fen())
+        # print("📥  Current board FEN after player move:", game.get_board_fen())
 
         # --- AI Training on Player Move ---
         try:
@@ -99,8 +101,7 @@ def make_move():
         # --- End AI Training ---
 
         if not game.is_game_over() and game.board.turn == chess.BLACK:
-            print("🤖 AI is calculating move...")
-            ai_move = game.ai_move()
+            ai_move = game.make_move("", by_ai=True)
             print(f"🤖 AI moved: {ai_move}")
             print("📥  Current board FEN after AI move:", game.get_board_fen())
             print("==============================")

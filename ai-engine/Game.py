@@ -1,5 +1,6 @@
 import torch
 import chess
+import random
 from ChessAI import ChessAI
 
 class Game:
@@ -13,39 +14,45 @@ class Game:
             self.optimizer = torch.optim.Adam(self.ai.model.parameters(), lr=0.001)
             self.loss_fn = nn.CrossEntropyLoss()
 
-    def make_move(self, move_uci):
-        import random
-
+    def make_move(self, move_uci=None, by_ai=False):
         if self.board.is_game_over():
             return False, "Game is already over"
 
-        strategy = random.choices(
-            ['epsilon', 'model', 'alphabeta', 'mcts'],
-            weights=[10, 30, 55, 5],
-            k=1
-        )[0]
+        if not by_ai:
+            try:
+                move = chess.Move.from_uci(move_uci)
+                if move in self.board.legal_moves:
+                    self.board.push(move)
+                else:
+                    return False, "Mutare ilegală"
+            except:
+                return False, "Format mutare invalid"
+        else:
+            strategy = random.choices(
+                ['epsilon', 'model', 'alphabeta', 'mcts'],
+                weights=[0, 0, 100, 0],
+                k=1
+            )[0]
 
-        if strategy == 'epsilon':
-            move = random.choice(list(self.board.legal_moves))
-        elif strategy == 'model':
-            move = self.ai.select_move(self.board)
-        elif strategy == 'alphabeta':
-            move_uci = self.ai_move_alphabeta()
-            return True, {"result": "Move made (alphabeta)", "move": move_uci, "strategy": "alphabeta"}
-        elif strategy == 'mcts':
-            move_uci = self.ai_move_mcts()
-            return True, {"result": "Move made (mcts)", "move": move_uci, "strategy": "mcts"}
+            if strategy == 'epsilon':
+                move = random.choice(list(self.board.legal_moves))
+            elif strategy == 'model':
+                move = self.ai.select_move(self.board)
+            elif strategy == 'alphabeta':
+                move = self.ai_move_alphabeta()
+                print("alpa")
+            elif strategy == 'mcts':
+                move = self.ai_move_mcts()
 
-        self.board.push(move)
+            self.board.push(move)
 
         return True, {
-            "result": "Move made",
             "fen": self.board.fen(),
             "turn": "white" if self.board.turn == chess.WHITE else "black",
             "is_check": self.board.is_check(),
             "is_checkmate": self.board.is_checkmate(),
             "is_stalemate": self.board.is_stalemate(),
-            "is_insufficient_material": self.board.is_insufficient_material()
+            "is_game_over": self.board.is_game_over()
         }
 
     def get_board_grid(self):
@@ -75,26 +82,6 @@ class Game:
 
     def get_board_fen(self):
         return self.board.fen()
-
-    def ai_move(self):
-        if not self.ai or self.board.is_game_over():
-            return None
-
-        if self.board.turn != chess.BLACK:
-            print("⛔ AI tried to move on white's turn.")
-            return None
-
-        import random
-        # Epsilon-greedy: with probability epsilon, pick random move; else, pick model move
-        if random.random() < getattr(self.ai, 'epsilon', 0.2):
-            move = random.choice(list(self.board.legal_moves))
-            print("🎲 AI alege mutare random (explorare):", move.uci())
-        else:
-            move = self.ai.select_move(self.board)
-            print("🧠 AI alege mutare din model:", move.uci())
-
-        self.board.push(move)
-        return move.uci()
 
     def is_game_over(self):
         return self.board.is_game_over()
@@ -202,7 +189,7 @@ class Game:
             return best_move.uci()
         return None
 
-    def ai_move_mcts(self, simulations=3):
+    def ai_move_mcts(self, simulations=10):
         import random
 
         def simulate_random_game(board):
