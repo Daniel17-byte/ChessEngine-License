@@ -14,26 +14,30 @@ class Game:
             self.loss_fn = nn.CrossEntropyLoss()
 
     def make_move(self, move_uci):
-        try:
-            if len(move_uci) == 4:
-                from_square = chess.parse_square(move_uci[:2])
-                to_square = chess.parse_square(move_uci[2:])
-                piece = self.board.piece_at(from_square)
-                if piece and piece.piece_type == chess.PAWN:
-                    rank_from = chess.square_rank(from_square)
-                    rank_to = chess.square_rank(to_square)
-                    if (piece.color == chess.WHITE and rank_from == 6 and rank_to == 7) or \
-                       (piece.color == chess.BLACK and rank_from == 1 and rank_to == 0):
-                        move_uci += 'q'
+        import random
 
-            move = chess.Move.from_uci(move_uci)
-        except ValueError:
-            return False, "Invalid move format"
+        if self.board.is_game_over():
+            return False, "Game is already over"
 
-        if move not in self.board.legal_moves:
-            return False, "Illegal move"
+        strategy = random.choices(
+            ['epsilon', 'model', 'alphabeta', 'mcts'],
+            weights=[10, 30, 55, 5],
+            k=1
+        )[0]
+
+        if strategy == 'epsilon':
+            move = random.choice(list(self.board.legal_moves))
+        elif strategy == 'model':
+            move = self.ai.select_move(self.board)
+        elif strategy == 'alphabeta':
+            move_uci = self.ai_move_alphabeta()
+            return True, {"result": "Move made (alphabeta)", "move": move_uci, "strategy": "alphabeta"}
+        elif strategy == 'mcts':
+            move_uci = self.ai_move_mcts()
+            return True, {"result": "Move made (mcts)", "move": move_uci, "strategy": "mcts"}
 
         self.board.push(move)
+
         return True, {
             "result": "Move made",
             "fen": self.board.fen(),
@@ -80,7 +84,15 @@ class Game:
             print("⛔ AI tried to move on white's turn.")
             return None
 
-        move = self.ai.select_move(self.board)
+        import random
+        # Epsilon-greedy: with probability epsilon, pick random move; else, pick model move
+        if random.random() < getattr(self.ai, 'epsilon', 0.2):
+            move = random.choice(list(self.board.legal_moves))
+            print("🎲 AI alege mutare random (explorare):", move.uci())
+        else:
+            move = self.ai.select_move(self.board)
+            print("🧠 AI alege mutare din model:", move.uci())
+
         self.board.push(move)
         return move.uci()
 
@@ -118,6 +130,7 @@ class Game:
         temp_board = self.board.copy()
         temp_board.pop()
         return temp_board.fen()
+
     def get_game_state(self):
         return {
             "fen": self.board.fen(),
@@ -131,3 +144,94 @@ class Game:
 
     def get_legal_moves(self):
         return [move.uci() for move in self.board.legal_moves]
+
+    def ai_move_alphabeta(self, depth=4):
+        def evaluate_board(board):
+            piece_values = {
+                chess.PAWN: 1,
+                chess.KNIGHT: 3,
+                chess.BISHOP: 3,
+                chess.ROOK: 5,
+                chess.QUEEN: 9,
+                chess.KING: 0
+            }
+            value = 0
+            for piece_type in piece_values:
+                value += len(board.pieces(piece_type, chess.WHITE)) * piece_values[piece_type]
+                value -= len(board.pieces(piece_type, chess.BLACK)) * piece_values[piece_type]
+            return value
+
+        def alphabeta(board, depth, alpha, beta, maximizing):
+            if depth == 0 or board.is_game_over():
+                return evaluate_board(board), None
+
+            best_move = None
+            if maximizing:
+                max_eval = float('-inf')
+                for move in board.legal_moves:
+                    board.push(move)
+                    eval, _ = alphabeta(board, depth - 1, alpha, beta, False)
+                    board.pop()
+                    if eval > max_eval:
+                        max_eval = eval
+                        best_move = move
+                    alpha = max(alpha, eval)
+                    if beta <= alpha:
+                        break
+                return max_eval, best_move
+            else:
+                min_eval = float('inf')
+                for move in board.legal_moves:
+                    board.push(move)
+                    eval, _ = alphabeta(board, depth - 1, alpha, beta, True)
+                    board.pop()
+                    if eval < min_eval:
+                        min_eval = eval
+                        best_move = move
+                    beta = min(beta, eval)
+                    if beta <= alpha:
+                        break
+                return min_eval, best_move
+
+        if self.board.is_game_over():
+            return None
+
+        _, best_move = alphabeta(self.board, depth, float('-inf'), float('inf'), self.board.turn == chess.WHITE)
+        if best_move:
+            self.board.push(best_move)
+            return best_move.uci()
+        return None
+
+    def ai_move_mcts(self, simulations=3):
+        import random
+
+        def simulate_random_game(board):
+            temp_board = board.copy()
+            while not temp_board.is_game_over():
+                legal_moves = list(temp_board.legal_moves)
+                move = random.choice(legal_moves)
+                temp_board.push(move)
+
+            result = temp_board.result()
+            if result == '1-0':
+                return 1 if self.board.turn == chess.WHITE else 0
+            elif result == '0-1':
+                return 1 if self.board.turn == chess.BLACK else 0
+            else:
+                return 0.5
+
+        if self.board.is_game_over():
+            return None
+
+        move_scores = {}
+        for move in self.board.legal_moves:
+            score = 0
+            for _ in range(simulations):
+                self.board.push(move)
+                score += simulate_random_game(self.board)
+                self.board.pop()
+            move_scores[move] = score / simulations
+
+        best_move = max(move_scores, key=move_scores.get)
+        self.board.push(best_move)
+        return best_move.uci()

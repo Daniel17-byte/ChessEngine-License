@@ -1,3 +1,8 @@
+import json
+with open("move_mapping.json") as f:
+    MOVE_MAPPING = json.load(f)
+OUTPUT_SIZE = len(MOVE_MAPPING)
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -11,7 +16,7 @@ class ChessNet(nn.Module):
         self.fc3 = nn.Linear(256, 128)
         self.fc4 = nn.Linear(128, 64)
         # Output: logits over all possible legal moves (up to 4672 options)
-        self.out = nn.Linear(64, 4672)
+        self.out = nn.Linear(64, OUTPUT_SIZE)
 
     def forward(self, x):
         x = F.relu(self.fc1(x))

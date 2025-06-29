@@ -23,6 +23,7 @@ class ChessAI:
         with open("move_mapping.json") as f:
             self.idx_to_move = json.load(f)
         self.move_to_idx = {uci: i for i, uci in enumerate(self.idx_to_move)}
+        self.epsilon = 0.2
 
     def move_to_index(self, move_uci: str) -> int:
         if move_uci not in self.move_to_idx:
@@ -75,8 +76,11 @@ class ChessAI:
         with torch.no_grad():
             prediction = self.model(board_tensor).squeeze(0)
 
-        best_idx = max(legal_indices, key=lambda i: prediction[i].item())
-        best_move = chess.Move.from_uci(self.idx_to_move[best_idx])
+        if random.random() < self.epsilon:
+            best_move = random.choice(legal_moves)
+        else:
+            best_idx = max(legal_indices, key=lambda i: prediction[i].item())
+            best_move = chess.Move.from_uci(self.idx_to_move[best_idx])
         return best_move
 
 # Example usage:
