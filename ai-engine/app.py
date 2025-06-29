@@ -58,10 +58,6 @@ def make_move():
         return jsonify({'error': 'No move provided'}), 400
 
     try:
-        # Save FEN before applying move for training
-        fen_before = None
-        if hasattr(game, "get_fen_before_last_move"):
-            fen_before = game.get_fen_before_last_move()
 
         success = game.make_move(move)
         print(f"✅ Player move valid: {success}")

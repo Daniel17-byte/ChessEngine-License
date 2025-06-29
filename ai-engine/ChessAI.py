@@ -34,7 +34,7 @@ class ChessAI:
         self.board = board
         strategy = random.choices(
             ['epsilon', 'model'],
-            weights=[70, 30],
+            weights=[30, 70],
             k=1
         )[0]
 
@@ -43,9 +43,6 @@ class ChessAI:
         elif strategy == 'model':
             return self.get_best_move_from_model(board)
         return None
-
-    def reset_board(self):
-        self.board.reset()
 
     def get_best_move_from_model(self, board: chess.Board) -> Optional[chess.Move]:
         self.board = board
