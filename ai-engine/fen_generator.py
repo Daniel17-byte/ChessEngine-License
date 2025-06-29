@@ -13,7 +13,7 @@ def generate_random_endgame(max_pieces=4):
     while True:
         king_white = random.randint(0, 63)
         king_black = random.randint(0, 63)
-        if king_white != king_black and not chess.SquareSet([king_white]).intersects(chess.SquareSet([king_black]).neighbors()):
+        if king_white != king_black and are_kings_non_adjacent(king_white, king_black):
             break
     board.set_piece_at(king_white, chess.Piece(chess.KING, chess.WHITE))
     board.set_piece_at(king_black, chess.Piece(chess.KING, chess.BLACK))
@@ -46,9 +46,16 @@ def generate_fens(n=100, max_pieces=4):
         attempts += 1
     return list(fens)
 
+
+def are_kings_non_adjacent(square1, square2):
+    file_diff = abs(chess.square_file(square1) - chess.square_file(square2))
+    rank_diff = abs(chess.square_rank(square1) - chess.square_rank(square2))
+    return max(file_diff, rank_diff) > 1
+
+
 if __name__ == "__main__":
     output_file = "generated_endgames.json"
-    fens = generate_fens(100)
+    fens = generate_fens(1000)
     with open(output_file, "w") as f:
         json.dump(fens, f, indent=2)
     print(f"✅ Salvat {len(fens)} FEN-uri în {output_file}")

@@ -29,8 +29,8 @@ else:
 optimizer = torch.optim.Adam(ai_white.model.parameters(), lr=0.001)
 loss_fn = torch.nn.CrossEntropyLoss()
 
-num_epochs = 500
-max_moves_per_game = 40
+num_epochs = 100
+max_moves_per_game = 30
 
 for epoch in range(num_epochs):
     # print(f"\n🌀 === Epoch {epoch + 1}/{num_epochs} ===")
@@ -87,7 +87,7 @@ for epoch in range(num_epochs):
 
         total_reward = reward[was_white] + step_reward
         loss = loss_fn(prediction, target) * total_reward
-        # print(f"🔻 Loss: {loss.item():.2f} | Reward: {total_reward:.2f} | {'Alb' if was_white else 'Negru'}")
+        print(f"🔻 Loss: {loss.item():.2f} | Reward: {total_reward:.2f} | {'Alb' if was_white else 'Negru'}")
 
         optimizer.zero_grad()
         loss.backward()

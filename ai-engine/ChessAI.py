@@ -33,8 +33,8 @@ class ChessAI:
     def select_move(self, board: chess.Board) -> Optional[chess.Move]:
         self.board = board
         strategy = random.choices(
-            ['epsilon', 'model', 'minimax'],
-            weights=[5, 15, 80],
+            ['epsilon', 'model', 'minimax', 'mcts'],
+            weights=[0, 0, 100, 0],
             k=1
         )[0]
 
@@ -46,6 +46,8 @@ class ChessAI:
             return self.get_best_move_from_model(board)
         elif strategy == 'minimax':
             return self.select_move_minimax(board)
+        elif strategy == 'mcts':
+            return self.select_move_mcts(board)
         return None
 
     def get_best_move_from_model(self, board: chess.Board) -> Optional[chess.Move]:
@@ -86,7 +88,7 @@ class ChessAI:
             value -= len(board.pieces(piece_type, chess.BLACK)) * piece_values[piece_type]
         return value
 
-    def select_move_minimax(self, board: chess.Board, depth: int = 3) -> Optional[chess.Move]:
+    def select_move_minimax(self, board: chess.Board, depth: int = 5) -> Optional[chess.Move]:
         def minimax(board, depth, alpha, beta, maximizing_player):
             if depth == 0 or board.is_game_over():
                 return self.evaluate_board(board), None
@@ -120,4 +122,34 @@ class ChessAI:
                 return min_eval, best_move
 
         _, best_move = minimax(board, depth, float('-inf'), float('inf'), board.turn)
+        return best_move
+
+    def select_move_mcts(self, board: chess.Board, simulations: int = 2) -> Optional[chess.Move]:
+        from copy import deepcopy
+
+        def simulate_random_game(sim_board: chess.Board) -> int:
+            while not sim_board.is_game_over():
+                legal_moves = list(sim_board.legal_moves)
+                move = random.choice(legal_moves)
+                sim_board.push(move)
+            result = sim_board.result()
+            if result == "1-0":
+                return 1 if board.turn == chess.WHITE else -1
+            elif result == "0-1":
+                return -1 if board.turn == chess.WHITE else 1
+            else:
+                return 0  # draw
+
+        legal_moves = list(board.legal_moves)
+        move_scores = {move: 0 for move in legal_moves}
+
+        for move in legal_moves:
+            total_score = 0
+            for _ in range(simulations):
+                sim_board = deepcopy(board)
+                sim_board.push(move)
+                total_score += simulate_random_game(sim_board)
+            move_scores[move] = total_score
+
+        best_move = max(move_scores.items(), key=lambda item: item[1])[0]
         return best_move
