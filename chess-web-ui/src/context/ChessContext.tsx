@@ -8,6 +8,8 @@ interface ChessContextType {
     isLoading: boolean;
     makePlayerMove: (from: string, to: string) => Promise<boolean>;
     resetGame: () => void;
+    lastAiMove: string | null;
+    isGameOver: boolean;
 }
 
 export const ChessContext = createContext<ChessContextType | undefined>(undefined);
@@ -15,11 +17,16 @@ export const ChessContext = createContext<ChessContextType | undefined>(undefine
 export const ChessProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
     const [fen, setFen] = useState<string>("");
     const [isLoading, setIsLoading] = useState(false);
+    const [lastAiMove, setLastAiMove] = useState<string | null>(null);
+    const [isGameOver, setIsGameOver] = useState(false);
 
     const syncBoard = async () => {
         try {
-            const fenFromServer = await getBoard();
-            setFen(fenFromServer ?? "");
+            const boardData = await getBoard();
+            setFen(boardData?.board ?? "");
+            setIsGameOver(
+                boardData?.is_checkmate || boardData?.is_stalemate || boardData?.is_insufficient_material || false
+            );
         } catch (error) {
             console.error("Failed to sync board:", error);
         }
@@ -33,6 +40,10 @@ export const ChessProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         try {
             const data = await makeMove(move);
             setFen(data.board ?? "");
+            setLastAiMove(data.ai_move ?? null);
+            setIsGameOver(
+                data.is_checkmate || data.is_stalemate || data.is_insufficient_material || false
+            );
             return true;
         } catch (err) {
             console.error("Move error:", err);
@@ -59,7 +70,7 @@ export const ChessProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     }, []);
 
     return (
-        <ChessContext.Provider value={{ fen, isLoading, makePlayerMove, resetGame }}>
+        <ChessContext.Provider value={{ fen, isLoading, makePlayerMove, resetGame, lastAiMove, isGameOver }}>
             {children}
         </ChessContext.Provider>
     );

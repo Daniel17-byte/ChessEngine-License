@@ -7,7 +7,7 @@ import json
 from collections import Counter
 import random
 
-def load_fens_from_files(filepath="generated_endgames.json"):
+def load_fens_from_files(filepath="generated_games.json"):
     fens = []
     if os.path.exists(filepath):
         with open(filepath, "r") as f:
