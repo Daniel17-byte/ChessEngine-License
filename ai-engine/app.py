@@ -67,9 +67,6 @@ def make_move():
             print("==============================")
             return jsonify({'error': 'Invalid move', 'board': game.get_board_fen()}), 400
 
-        print("♟️  Player move applied.")
-
-
         if not game.is_game_over() and game.board.turn == chess.BLACK:
             ai_move = game.ai_move()
             print(f"🤖 AI moved: {ai_move}")

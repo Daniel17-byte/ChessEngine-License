@@ -6,7 +6,7 @@ class Game:
     def __init__(self):
         self.board = chess.Board()
         self.ai = ChessAI()
-        self.turn = chess.WHITE  # true: white, false: black
+        self.turn = chess.WHITE
         if self.ai:
             import torch.nn as nn
             import torch
@@ -19,7 +19,18 @@ class Game:
 
         move = chess.Move.from_uci(move_uci)
         if move in self.board.legal_moves:
+            captured_piece = self.board.piece_at(move.to_square)
+            piece_values = {'p': 1, 'n': 3, 'b': 3, 'r': 5, 'q': 9, 'k': 0}
+            reward = 0
+            if captured_piece:
+                reward += piece_values.get(captured_piece.symbol().lower(), 0)
             self.board.push(move)
+            # Penalizare dacă o piesă rămâne sub atac după mutare
+            for square in self.board.piece_map():
+                piece = self.board.piece_at(square)
+                if piece and piece.color == self.board.turn:  # piesele celui care a mutat
+                    if self.board.is_attacked_by(not self.board.turn, square):
+                        reward -= piece_values.get(piece.symbol().lower(), 0) * 0.5
         else:
             return False, "Mutare ilegală"
 
@@ -29,7 +40,8 @@ class Game:
             "is_check": self.board.is_check(),
             "is_checkmate": self.board.is_checkmate(),
             "is_stalemate": self.board.is_stalemate(),
-            "is_game_over": self.board.is_game_over()
+            "is_game_over": self.board.is_game_over(),
+            "reward": reward
         }
 
     def reset(self):
@@ -63,3 +75,6 @@ class Game:
         move = self.ai.select_move(self.board)
         self.board.push(move)
         return move.uci()
+
+    def get_result(self):
+        return self.board.result()

@@ -34,7 +34,7 @@ class ChessAI:
         self.board = board
         strategy = random.choices(
             ['epsilon', 'model'],
-            weights=[30, 70],
+            weights=[60, 30],
             k=1
         )[0]
 
