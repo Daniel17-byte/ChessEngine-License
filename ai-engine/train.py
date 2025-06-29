@@ -29,8 +29,8 @@ else:
 optimizer = torch.optim.Adam(ai_white.model.parameters(), lr=0.001)
 loss_fn = torch.nn.CrossEntropyLoss()
 
-num_epochs = 1000
-max_moves_per_game = 20
+num_epochs = 2000
+max_moves_per_game = 40
 
 for epoch in range(num_epochs):
     print(f"\n🌀 === Epoch {epoch + 1}/{num_epochs} ===")
@@ -57,9 +57,9 @@ for epoch in range(num_epochs):
     # Recompensă finală: +1 pentru câștigător, -1 pentru pierzător, 0 pentru remiză
     result = game.get_result()
     if result == '1-0':
-        reward = {True: 1.0, False: -1.0}
+        reward = {True: 5.0, False: -5.0}
     elif result == '0-1':
-        reward = {True: -1.0, False: 1.0}
+        reward = {True: -5.0, False: 5.0}
     else:
         reward = {True: 0.0, False: 0.0}
 

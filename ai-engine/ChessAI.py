@@ -33,8 +33,8 @@ class ChessAI:
     def select_move(self, board: chess.Board) -> Optional[chess.Move]:
         self.board = board
         strategy = random.choices(
-            ['epsilon', 'model'],
-            weights=[60, 30],
+            ['epsilon', 'model', 'minimax'],
+            weights=[25, 25, 50],
             k=1
         )[0]
 
@@ -42,6 +42,8 @@ class ChessAI:
             return random.choice(list(self.board.legal_moves))
         elif strategy == 'model':
             return self.get_best_move_from_model(board)
+        elif strategy == 'minimax':
+            return self.select_move_minimax(board)
         return None
 
     def get_best_move_from_model(self, board: chess.Board) -> Optional[chess.Move]:
@@ -65,4 +67,55 @@ class ChessAI:
             print(f"⚠️ Predicted move {best_move} is not legal in the current board position.")
             return random.choice(legal_moves)
 
+        return best_move
+
+    def evaluate_board(self, board: chess.Board) -> float:
+        piece_values = {
+            chess.PAWN: 1,
+            chess.KNIGHT: 3,
+            chess.BISHOP: 3,
+            chess.ROOK: 5,
+            chess.QUEEN: 9,
+            chess.KING: 0
+        }
+        value = 0
+        for piece_type in piece_values:
+            value += len(board.pieces(piece_type, chess.WHITE)) * piece_values[piece_type]
+            value -= len(board.pieces(piece_type, chess.BLACK)) * piece_values[piece_type]
+        return value
+
+    def select_move_minimax(self, board: chess.Board, depth: int = 2) -> Optional[chess.Move]:
+        def minimax(board, depth, alpha, beta, maximizing_player):
+            if depth == 0 or board.is_game_over():
+                return self.evaluate_board(board), None
+
+            best_move = None
+            if maximizing_player:
+                max_eval = float('-inf')
+                for move in board.legal_moves:
+                    board.push(move)
+                    eval, _ = minimax(board, depth - 1, alpha, beta, False)
+                    board.pop()
+                    if eval > max_eval:
+                        max_eval = eval
+                        best_move = move
+                    alpha = max(alpha, eval)
+                    if beta <= alpha:
+                        break
+                return max_eval, best_move
+            else:
+                min_eval = float('inf')
+                for move in board.legal_moves:
+                    board.push(move)
+                    eval, _ = minimax(board, depth - 1, alpha, beta, True)
+                    board.pop()
+                    if eval < min_eval:
+                        min_eval = eval
+                        best_move = move
+                    beta = min(beta, eval)
+                    if beta <= alpha:
+                        break
+                return min_eval, best_move
+
+        _, best_move = minimax(board, depth, float('-inf'), float('inf'), board.turn)
         return best_move

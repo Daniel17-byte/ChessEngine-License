@@ -17,6 +17,17 @@ class Game:
         if self.board.is_game_over():
             return False, "Game is already over"
 
+        # Detectăm promovarea implicită la regină doar dacă e pion
+        if len(move_uci) == 4:
+            from_square = chess.parse_square(move_uci[:2])
+            to_square = chess.parse_square(move_uci[2:4])
+            piece = self.board.piece_at(from_square)
+            if piece and piece.piece_type == chess.PAWN:
+                # Verificăm dacă pionul ajunge la ultima linie pentru promovare
+                if (piece.color == chess.WHITE and to_square // 8 == 0) or \
+                   (piece.color == chess.BLACK and to_square // 8 == 7):
+                    move_uci += 'q'  # promovare implicită la regină
+
         move = chess.Move.from_uci(move_uci)
         if move in self.board.legal_moves:
             captured_piece = self.board.piece_at(move.to_square)

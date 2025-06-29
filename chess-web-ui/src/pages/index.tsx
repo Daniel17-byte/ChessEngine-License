@@ -20,7 +20,7 @@ function HomeContent() {
             <button onClick={resetGame} style={{ marginBottom: 20 }}>
                 ♻️ Resetează jocul
             </button>
-            <h1>♟️ Joc de Șah cu AI</h1>
+            <h1>♟️ Chess Engine </h1>
             <div style={{ display: "flex", justifyContent: "center" }}>
                 <ChessBoard />
             </div>
