@@ -67,6 +67,18 @@ class Game:
             "is_insufficient_material": False
         }
 
+    def reset_from_fen(self, fen):
+        self.board = chess.Board(fen)
+        return {
+            "message": "Board reset from FEN",
+            "fen": self.board.fen(),
+            "turn": "white" if self.board.turn == chess.WHITE else "black",
+            "is_check": self.board.is_check(),
+            "is_checkmate": self.board.is_checkmate(),
+            "is_stalemate": self.board.is_stalemate(),
+            "is_insufficient_material": self.board.is_insufficient_material()
+        }
+
     def get_board_fen(self):
         return self.board.fen()
 

@@ -5,6 +5,14 @@ from Game import Game
 from ChessNet import encode_fen
 import json
 from collections import Counter
+import random
+
+def load_fens_from_files(filepath="generated_endgames.json"):
+    fens = []
+    if os.path.exists(filepath):
+        with open(filepath, "r") as f:
+            fens = json.load(f)
+    return fens
 
 with open("move_mapping.json") as f:
     idx_to_move = json.load(f)
@@ -30,11 +38,17 @@ optimizer = torch.optim.Adam(ai_white.model.parameters(), lr=0.001)
 loss_fn = torch.nn.CrossEntropyLoss()
 
 num_epochs = 100
-max_moves_per_game = 30
+max_moves_per_game = 40
+
+fen_positions = load_fens_from_files()
 
 for epoch in range(num_epochs):
-    # print(f"\n🌀 === Epoch {epoch + 1}/{num_epochs} ===")
-    game.reset()
+    print(f"\n🌀 === Epoch {epoch + 1}/{num_epochs} ===")
+    if fen_positions:
+        fen = random.choice(fen_positions)
+        game.reset_from_fen(fen)
+    else:
+        game.reset()
 
     history = []
     move_count = 0
@@ -87,7 +101,7 @@ for epoch in range(num_epochs):
 
         total_reward = reward[was_white] + step_reward
         loss = loss_fn(prediction, target) * total_reward
-        print(f"🔻 Loss: {loss.item():.2f} | Reward: {total_reward:.2f} | {'Alb' if was_white else 'Negru'}")
+        # print(f"🔻 Loss: {loss.item():.2f} | Reward: {total_reward:.2f} | {'Alb' if was_white else 'Negru'}")
 
         optimizer.zero_grad()
         loss.backward()
@@ -95,7 +109,8 @@ for epoch in range(num_epochs):
 
     stats[result] += 1
     # print(f"🎯 Rezultat: {result} | Mutări: {move_count}")
-    print(f"📊 Statistici: {dict(stats)}")
+    total_games = stats['1-0'] + stats['0-1'] + stats['1/2-1/2']
+    print(f"🏁 WHITE {stats['1-0']} | BLACK {stats['0-1']} | DRAW {stats['1/2-1/2']} | Total: {total_games} | Mutări: {move_count}")
 
 torch.save(ai_white.model.state_dict(), "trained_model.pth")
 print("💾 Model salvat în 'trained_model.pth'")

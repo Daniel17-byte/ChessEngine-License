@@ -1,4 +1,3 @@
-
 import chess
 import random
 import json
@@ -39,10 +38,16 @@ def generate_random_endgame(max_pieces=4):
 def generate_fens(n=100, max_pieces=4):
     fens = set()
     attempts = 0
+    current_turn = chess.WHITE
     while len(fens) < n and attempts < MAX_ATTEMPTS:
         fen = generate_random_endgame(max_pieces)
-        if chess.Board(fen).is_valid():
+        board = chess.Board(fen)
+        board.turn = current_turn
+        board.clear_stack()
+        fen = board.fen()
+        if board.is_valid():
             fens.add(fen)
+            current_turn = not current_turn  # alternăm între alb și negru
         attempts += 1
     return list(fens)
 
