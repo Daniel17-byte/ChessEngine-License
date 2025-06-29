@@ -1,52 +1,68 @@
 import torch
+import os
 from ChessAI import ChessAI
 from Game import Game
-
-# Inițializăm AI-ul și jocul
-ai = ChessAI()
-game = Game()
-
 from ChessNet import encode_fen
 
-# Setăm optimizatorul și funcția de pierdere
-optimizer = torch.optim.Adam(ai.model.parameters(), lr=0.001)
+ai_white = ChessAI()
+ai_black = ChessAI()
+game = Game()
+
+if os.path.exists("trained_model.pth"):
+    state_dict = torch.load("trained_model.pth")
+    ai_white.model.load_state_dict(state_dict)
+    ai_black.model.load_state_dict(state_dict)
+    ai_white.model.eval()
+    ai_black.model.eval()
+    print("✅ Model încărcat pentru ambele părți.")
+else:
+    print("⚠️ Nu există model anterior — începem de la zero.")
+
+optimizer = torch.optim.Adam(ai_white.model.parameters(), lr=0.001)
 loss_fn = torch.nn.CrossEntropyLoss()
 
-# Număr de epoci de antrenare
 num_epochs = 1000
 
 for epoch in range(num_epochs):
-    # Resetăm jocul pentru fiecare episod
+    print(f"\n🌀 === Epoch {epoch + 1}/{num_epochs} ===")
     game.reset()
+    print("🔁 Joc resetat.")
 
-    while True:
-        board_state = encode_fen(game.get_fen()).unsqueeze(0)
-        if board_state is None:
-            break  # Ieșim dacă nu avem stare validă
+    max_moves_per_game = 5
+    move_count = 0
 
-        prediction = ai.model(board_state)  # [1, num_moves]
+    while not game.is_game_over() and move_count < max_moves_per_game:
+        move_count += 1
+        print(f"[E{epoch + 1} - M{move_count}]")
+        if game.board.turn:
+            current_ai = ai_white
+            player = "Alb"
+        else:
+            current_ai = ai_black
+            player = "Negru"
 
-        move = game.get_last_move_uci()
-        if move is None:
-            break  # Nu există mutare anterioară, ieșim din buclă
+        move = current_ai.get_best_move_from_model(game.board)
 
-        move_index = ai.move_to_index(move)
-        target = torch.tensor([move_index])
+        if move:
+            print(f"♟️ {player} joacă: {move}")
+            game.make_move(move.uci())
 
-        loss = loss_fn(prediction, target)
+            board_state = encode_fen(game.get_fen()).unsqueeze(0)
+            if board_state is None:
+                print("⚠️ FEN invalid — se trece peste mutare.")
+                continue
 
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
+            move_index = current_ai.move_to_index(move)
+            target = torch.tensor([move_index])
 
-        print(f"Epoch {epoch+1}/{num_epochs}, Loss: {loss.item():.6f}")
+            prediction = current_ai.model(board_state)
+            loss = loss_fn(prediction, target)
 
-        if game.is_game_over():
-            break
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
 
-        # Așteptăm mutarea utilizatorului pentru a continua antrenamentul în timp real
-        game.wait_for_user_move()
+    print("🏁 Joc terminat.")
 
-# Salvăm modelul antrenat
-torch.save(ai.model.state_dict(), "trained_model.pth")
-print("Modelul a fost salvat în 'trained_model.pth'")
+torch.save(ai_white.model.state_dict(), "trained_model.pth")
+print("💾 Model salvat în 'trained_model.pth'")

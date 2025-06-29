@@ -1,11 +1,11 @@
 .board {
     display: grid;
-    grid-template-rows: repeat(8, 60px);
+    grid-template-rows: repeat(8, 70px);
 }
 
 .row {
     display: grid;
-    grid-template-columns: repeat(8, 60px);
+    grid-template-columns: repeat(8, 70px);
 }
 
 .cell {
@@ -14,7 +14,7 @@
     align-items: center;
     background-color: #f0d9b5;
     border: 1px solid #999;
-    font-size: 30px;
+    font-size: 40px;
     cursor: pointer;
 }
 

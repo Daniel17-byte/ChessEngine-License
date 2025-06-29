@@ -3,16 +3,26 @@ import chess.engine
 import random
 import numpy as np
 from typing import Optional
-from ChessNet import ChessNet  # <-- adăugat
+from ChessNet import ChessNet
 import torch
+import os
 
 
 class ChessAI:
     def __init__(self):
         self.board = chess.Board()
         self.model = ChessNet()
-        self.move_to_idx = {}
-        self.idx_to_move = []
+        if os.path.exists("trained_model.pth"):
+            self.model.load_state_dict(torch.load("trained_model.pth"))
+            self.model.eval()
+            print("✅ Model încărcat cu succes din trained_model.pth")
+        else:
+            print("⚠️ Model neantrenat — se va antrena de la zero.")
+        self.model.eval()
+        import json
+        with open("move_mapping.json") as f:
+            self.idx_to_move = json.load(f)
+        self.move_to_idx = {uci: i for i, uci in enumerate(self.idx_to_move)}
 
     def move_to_index(self, move_uci: str) -> int:
         if move_uci not in self.move_to_idx:
@@ -23,7 +33,7 @@ class ChessAI:
     def select_move(self, board: chess.Board) -> Optional[chess.Move]:
         self.board = board
         print(f"♟️  AI received board FEN: {board.fen()}")
-        return self.get_best_move_minimax()
+        return self.get_best_move_from_model(board)
 
     def reset_board(self):
         self.board.reset()
@@ -54,81 +64,25 @@ class ChessAI:
         eval += 0.1 * mobility if board.turn == chess.WHITE else -0.1 * mobility
         return eval
 
-    def minimax(self, board: chess.Board, depth: int, alpha: float, beta: float, maximizing: bool) -> float:
-        if depth == 0 or board.is_game_over():
-            return self.evaluate_board(board)
+    def get_best_move_from_model(self, board: chess.Board) -> Optional[chess.Move]:
+        self.board = board
+        from ChessNet import encode_fen
+        board_tensor = encode_fen(board.fen()).unsqueeze(0)
 
-        if maximizing:
-            max_eval = -np.inf
-            for move in board.legal_moves:
-                board.push(move)
-                eval = self.minimax(board, depth - 1, alpha, beta, False)
-                board.pop()
-                max_eval = max(max_eval, eval)
-                alpha = max(alpha, eval)
-                if beta <= alpha:
-                    break
-            return max_eval
-        else:
-            min_eval = np.inf
-            for move in board.legal_moves:
-                board.push(move)
-                eval = self.minimax(board, depth - 1, alpha, beta, True)
-                board.pop()
-                min_eval = min(min_eval, eval)
-                beta = min(beta, eval)
-                if beta <= alpha:
-                    break
-            return min_eval
+        legal_moves = list(board.legal_moves)
+        legal_indices = [self.move_to_index(m.uci()) for m in legal_moves]
 
-    def get_best_move_minimax(self, depth=3) -> Optional[chess.Move]:
-        best_move = None
-        best_value = -np.inf
-        alpha = -np.inf
-        beta = np.inf
-        for move in self.board.legal_moves:
-            self.board.push(move)
-            move_value = self.minimax(self.board, depth - 1, alpha, beta, False)
-            self.board.pop()
-            print(f"Evaluated move {move}: {move_value}")
-            if move_value > best_value:
-                best_value = move_value
-                best_move = move
-                alpha = max(alpha, move_value)
+        with torch.no_grad():
+            prediction = self.model(board_tensor).squeeze(0)
+
+        best_idx = max(legal_indices, key=lambda i: prediction[i].item())
+        best_move = chess.Move.from_uci(self.idx_to_move[best_idx])
         return best_move
-
-    def get_random_move(self) -> chess.Move:
-        return random.choice(list(self.board.legal_moves))
-
-
-# Monte Carlo Tree Search (MCTS) skeleton
-class MCTSNode:
-    def __init__(self, board: chess.Board, parent=None):
-        self.board = board.copy()
-        self.parent = parent
-        self.children = []
-        self.visits = 0
-        self.value = 0
-        self.untried_moves = list(board.legal_moves)
-
-    def is_fully_expanded(self):
-        return len(self.untried_moves) == 0
-
-    def best_child(self, c_param=1.4):
-        return max(self.children, key=lambda child: child.value / child.visits + c_param * np.sqrt(np.log(self.visits) / child.visits))
-
-
-# Neural net placeholder
-# to be replaced PyTorch model
-class DummyNN:
-    def predict(self, board: chess.Board):
-        return np.random.rand(len(list(board.legal_moves)))
-
 
 # Example usage:
 if __name__ == "__main__":
     ai = ChessAI()
-    move = ai.get_best_move_minimax()
+    move = ai.get_best_move_from_model(ai.board)
     print("Best move (Minimax):", move)
     ai.board.push(move)
     print(ai.board)

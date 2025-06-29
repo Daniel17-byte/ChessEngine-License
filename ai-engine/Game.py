@@ -3,10 +3,9 @@ import chess
 from ChessAI import ChessAI
 
 class Game:
-    def __init__(self, vs_ai=False):
+    def __init__(self):
         self.board = chess.Board()
-        self.vs_ai = vs_ai
-        self.ai = ChessAI() if vs_ai else None
+        self.ai = ChessAI()
         self.turn = chess.WHITE  # true: white, false: black
         if self.ai:
             import torch.nn as nn
@@ -15,27 +14,35 @@ class Game:
             self.loss_fn = nn.CrossEntropyLoss()
 
     def make_move(self, move_uci):
-        ai_move = None
         try:
+            if len(move_uci) == 4:
+                from_square = chess.parse_square(move_uci[:2])
+                to_square = chess.parse_square(move_uci[2:])
+                piece = self.board.piece_at(from_square)
+                if piece and piece.piece_type == chess.PAWN:
+                    rank_from = chess.square_rank(from_square)
+                    rank_to = chess.square_rank(to_square)
+                    if (piece.color == chess.WHITE and rank_from == 6 and rank_to == 7) or \
+                       (piece.color == chess.BLACK and rank_from == 1 and rank_to == 0):
+                        move_uci += 'q'
+
             move = chess.Move.from_uci(move_uci)
         except ValueError:
             return False, "Invalid move format"
+
         if move not in self.board.legal_moves:
             return False, "Illegal move"
+
         self.board.push(move)
-
-        if self.vs_ai and not self.board.is_game_over():
-            if self.board.turn == chess.BLACK:
-                ai_move = self.ai.get_best_move_minimax()
-                if ai_move and ai_move in self.board.legal_moves:
-                    self.board.push(ai_move)
-                else:
-                    print("⚠️ AI did not return a valid move.")
-
-        if ai_move:
-            return True, {"result": "Move made", "ai_move": ai_move.uci()}
-        else:
-            return True, {"result": "Player move accepted, no AI move"}
+        return True, {
+            "result": "Move made",
+            "fen": self.board.fen(),
+            "turn": "white" if self.board.turn == chess.WHITE else "black",
+            "is_check": self.board.is_check(),
+            "is_checkmate": self.board.is_checkmate(),
+            "is_stalemate": self.board.is_stalemate(),
+            "is_insufficient_material": self.board.is_insufficient_material()
+        }
 
     def get_board_grid(self):
         grid = [[None for _ in range(8)] for _ in range(8)]
@@ -52,6 +59,15 @@ class Game:
 
     def reset(self):
         self.board.reset()
+        return {
+            "message": "Board reset",
+            "fen": self.board.fen(),
+            "turn": "white",
+            "is_check": False,
+            "is_checkmate": False,
+            "is_stalemate": False,
+            "is_insufficient_material": False
+        }
 
     def get_board_fen(self):
         return self.board.fen()
@@ -102,3 +118,16 @@ class Game:
         temp_board = self.board.copy()
         temp_board.pop()
         return temp_board.fen()
+    def get_game_state(self):
+        return {
+            "fen": self.board.fen(),
+            "turn": "white" if self.board.turn == chess.WHITE else "black",
+            "is_check": self.board.is_check(),
+            "is_checkmate": self.board.is_checkmate(),
+            "is_stalemate": self.board.is_stalemate(),
+            "is_insufficient_material": self.board.is_insufficient_material(),
+            "last_move": self.get_last_move_uci()
+        }
+
+    def get_legal_moves(self):
+        return [move.uci() for move in self.board.legal_moves]
