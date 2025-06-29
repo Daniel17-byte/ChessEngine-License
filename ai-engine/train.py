@@ -29,11 +29,11 @@ else:
 optimizer = torch.optim.Adam(ai_white.model.parameters(), lr=0.001)
 loss_fn = torch.nn.CrossEntropyLoss()
 
-num_epochs = 2000
+num_epochs = 500
 max_moves_per_game = 40
 
 for epoch in range(num_epochs):
-    print(f"\n🌀 === Epoch {epoch + 1}/{num_epochs} ===")
+    # print(f"\n🌀 === Epoch {epoch + 1}/{num_epochs} ===")
     game.reset()
 
     history = []
@@ -54,12 +54,29 @@ for epoch in range(num_epochs):
                 step_reward = move_info.get("reward", 0.0)
                 history.append((board_state, move_index, game.board.turn, step_reward))
 
-    # Recompensă finală: +1 pentru câștigător, -1 pentru pierzător, 0 pentru remiză
     result = game.get_result()
     if result == '1-0':
-        reward = {True: 5.0, False: -5.0}
+        base = 5.0
+        if move_count < 10:
+            base *= 10.0
+        elif move_count < 20:
+            base *= 4.0
+        elif move_count < 30:
+            base *= 2.0
+        elif move_count < 40:
+            base *= 1.5
+        reward = {True: base, False: -base}
     elif result == '0-1':
-        reward = {True: -5.0, False: 5.0}
+        base = 5.0
+        if move_count < 10:
+            base *= 10.0
+        elif move_count < 20:
+            base *= 4.0
+        elif move_count < 30:
+            base *= 2.0
+        elif move_count < 40:
+            base *= 1.5
+        reward = {True: -base, False: base}
     else:
         reward = {True: 0.0, False: 0.0}
 
@@ -70,6 +87,7 @@ for epoch in range(num_epochs):
 
         total_reward = reward[was_white] + step_reward
         loss = loss_fn(prediction, target) * total_reward
+        # print(f"🔻 Loss: {loss.item():.2f} | Reward: {total_reward:.2f} | {'Alb' if was_white else 'Negru'}")
 
         optimizer.zero_grad()
         loss.backward()
