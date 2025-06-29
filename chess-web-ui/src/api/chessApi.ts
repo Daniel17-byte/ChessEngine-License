@@ -25,7 +25,10 @@ export const makeMove = async (
 
         const data = await res.json();
         if (!res.ok) {
-            return { error: data?.error || "Unknown error" };
+            return {
+                error: data?.error || "Unknown error",
+                board: data?.board,
+            };
         }
 
         return data;

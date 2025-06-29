@@ -44,7 +44,7 @@ for epoch in range(num_epochs):
             current_ai = ai_black
             player = "Negru"
 
-        move = current_ai.get_best_move_from_model(game.board)
+        move = current_ai.select_move(game.board)
         # print(f"🔁 {player} mută: {move.uci()}")
 
         if move:

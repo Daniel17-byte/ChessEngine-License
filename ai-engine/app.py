@@ -1,7 +1,5 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-from sympy.strategies import null_safe
-
 from Game import Game
 import chess
 
@@ -48,16 +46,17 @@ def make_move():
         chess_move = chess.Move.from_uci(move)
     except:
         print("❌ Invalid move format.")
-        return jsonify({'error': 'Invalid move format'}), 400
+        return jsonify({'error': 'Invalid move format', 'board': game.get_board_fen()}), 400
 
     if chess_move not in game.board.legal_moves:
         print("❌ Move is not legal.")
-        return jsonify({'error': 'Illegal move'}), 400
+        return jsonify({'error': 'Illegal move', 'board': game.get_board_fen()}), 400
 
     if not move:
         print("❌ No move provided.")
         print("==============================")
         return jsonify({'error': 'No move provided'}), 400
+
     try:
         # Save FEN before applying move for training
         fen_before = None
@@ -73,37 +72,11 @@ def make_move():
             return jsonify({'error': 'Invalid move', 'board': game.get_board_fen()}), 400
 
         print("♟️  Player move applied.")
-        # print("📥  Current board FEN after player move:", game.get_board_fen())
 
-        # --- AI Training on Player Move ---
-        try:
-            from ChessNet import encode_fen
-            from ChessAI import ChessAI
-            import torch.nn as nn
-            import torch
-            if not hasattr(game, 'ai'):
-                game.ai = ChessAI()
-                game.optimizer = torch.optim.Adam(game.ai.model.parameters(), lr=0.001)
-                game.loss_fn = nn.CrossEntropyLoss()
-            if fen_before is not None:
-                input_tensor = encode_fen(fen_before).unsqueeze(0)
-                move_index = game.ai.move_to_index(move)
-                target = torch.tensor([move_index])
-                prediction = game.ai.model(input_tensor)
-                loss = game.loss_fn(prediction, target)
-                game.optimizer.zero_grad()
-                loss.backward()
-                game.optimizer.step()
-                print(f"🧠 Trained on move: {move}, Loss: {loss.item():.6f}")
-        except Exception as train_exc:
-            print(f"⚠️  Training step failed: {train_exc}")
-
-        # --- End AI Training ---
 
         if not game.is_game_over() and game.board.turn == chess.BLACK:
-            ai_move = game.make_move("", by_ai=True)
+            ai_move = game.ai_move()
             print(f"🤖 AI moved: {ai_move}")
-            print("📥  Current board FEN after AI move:", game.get_board_fen())
             print("==============================")
             return jsonify({
                 'board': game.get_board_fen(),
@@ -116,7 +89,6 @@ def make_move():
                 'is_insufficient_material': game.board.is_insufficient_material()
             })
         else:
-            print("🏁 Game is over after this move.")
             print("==============================")
             return jsonify({
                 'board': game.get_board_fen(),

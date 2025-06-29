@@ -1,7 +1,6 @@
 import chess
 import chess.engine
 import random
-import numpy as np
 from typing import Optional
 from ChessNet import ChessNet
 import torch
@@ -33,36 +32,20 @@ class ChessAI:
 
     def select_move(self, board: chess.Board) -> Optional[chess.Move]:
         self.board = board
-        return self.get_best_move_from_model(board)
+        strategy = random.choices(
+            ['epsilon', 'model'],
+            weights=[70, 30],
+            k=1
+        )[0]
+
+        if strategy == 'epsilon':
+            return random.choice(list(self.board.legal_moves))
+        elif strategy == 'model':
+            return self.get_best_move_from_model(board)
+        return None
 
     def reset_board(self):
         self.board.reset()
-
-    def calculate_target(self, board_tensor):
-        # Calcul simplu al scorului poziției pe baza pieselor
-        piece_values = torch.tensor([1, 3, 3, 5, 9, 0, -1, -3, -3, -5, -9, 0], dtype=torch.float32)
-        # board_tensor: [1, 12, 8, 8]
-        material = board_tensor.squeeze(0).reshape(12, -1).sum(dim=1)
-        score = (material * piece_values).sum()
-        return score.unsqueeze(0)  # Tensor [1]
-
-    def evaluate_board(self, board: chess.Board) -> int:
-        """Material + mobility evaluation."""
-        values = {
-            chess.PAWN: 1,
-            chess.KNIGHT: 3,
-            chess.BISHOP: 3,
-            chess.ROOK: 5,
-            chess.QUEEN: 9,
-            chess.KING: 0
-        }
-        eval = 0
-        for piece_type in values:
-            eval += len(board.pieces(piece_type, chess.WHITE)) * values[piece_type]
-            eval -= len(board.pieces(piece_type, chess.BLACK)) * values[piece_type]
-        mobility = len(list(board.legal_moves))
-        eval += 0.1 * mobility if board.turn == chess.WHITE else -0.1 * mobility
-        return eval
 
     def get_best_move_from_model(self, board: chess.Board) -> Optional[chess.Move]:
         self.board = board
@@ -76,16 +59,13 @@ class ChessAI:
             prediction = self.model(board_tensor).squeeze(0)
 
         if random.random() < self.epsilon:
-            best_move = random.choice(legal_moves)
-        else:
-            best_idx = max(legal_indices, key=lambda i: prediction[i].item())
-            best_move = chess.Move.from_uci(self.idx_to_move[best_idx])
-        return best_move
+            return random.choice(legal_moves)
 
-# Example usage:
-if __name__ == "__main__":
-    ai = ChessAI()
-    move = ai.get_best_move_from_model(ai.board)
-    print("Best move (Minimax):", move)
-    ai.board.push(move)
-    print(ai.board)
+        best_idx = max(legal_indices, key=lambda i: prediction[i].item())
+        best_move = chess.Move.from_uci(self.idx_to_move[best_idx])
+
+        if best_move not in self.board.legal_moves:
+            print(f"⚠️ Predicted move {best_move} is not legal in the current board position.")
+            return random.choice(legal_moves)
+
+        return best_move
