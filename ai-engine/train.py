@@ -38,12 +38,11 @@ optimizer = torch.optim.Adam(ai_white.model.parameters(), lr=0.001)
 loss_fn = torch.nn.CrossEntropyLoss()
 
 num_epochs = 100
-max_moves_per_game = 40
+max_moves_per_game = 30
 
 fen_positions = load_fens_from_files()
 
 for epoch in range(num_epochs):
-    print(f"\n🌀 === Epoch {epoch + 1}/{num_epochs} ===")
     if fen_positions:
         fen = random.choice(fen_positions)
         game.reset_from_fen(fen)
@@ -70,29 +69,32 @@ for epoch in range(num_epochs):
 
     result = game.get_result()
     if result == '1-0':
-        base = 5.0
+        base = 1.0
         if move_count < 10:
-            base *= 10.0
-        elif move_count < 20:
-            base *= 4.0
-        elif move_count < 30:
-            base *= 2.0
-        elif move_count < 40:
             base *= 1.5
+        elif move_count < 20:
+            base *= 1.2
+        elif move_count < 30:
+            base *= 1.0
+        else:
+            base *= 0.8
         reward = {True: base, False: -base}
     elif result == '0-1':
-        base = 5.0
+        base = 1.0
         if move_count < 10:
-            base *= 10.0
-        elif move_count < 20:
-            base *= 4.0
-        elif move_count < 30:
-            base *= 2.0
-        elif move_count < 40:
             base *= 1.5
+        elif move_count < 20:
+            base *= 1.2
+        elif move_count < 30:
+            base *= 1.0
+        else:
+            base *= 0.8
         reward = {True: -base, False: base}
     else:
         reward = {True: 0.0, False: 0.0}
+
+    total_loss = 0.0
+    total_scaled_reward = 0.0
 
     # Învățare: aplicăm loss pe fiecare mutare cu reward ca "greutate"
     for state, move_index, was_white, step_reward in history:
@@ -100,17 +102,25 @@ for epoch in range(num_epochs):
         target = torch.tensor([move_index])
 
         total_reward = reward[was_white] + step_reward
-        loss = loss_fn(prediction, target) * total_reward
+        ce_loss = loss_fn(prediction, target)
+        scaled_reward = torch.clamp(torch.tensor(total_reward), -1.0, 1.0)
+        raw_loss = ce_loss.item()
+        scaled_loss = ce_loss * scaled_reward
         # print(f"🔻 Loss: {loss.item():.2f} | Reward: {total_reward:.2f} | {'Alb' if was_white else 'Negru'}")
 
         optimizer.zero_grad()
-        loss.backward()
+        scaled_loss.backward()
         optimizer.step()
+
+        total_loss += raw_loss
+        total_scaled_reward += total_reward
+
+    print(f"📉 Loss total (pe joc): {total_loss:.4f} | 🎁 Reward total: {total_scaled_reward:.2f}")
 
     stats[result] += 1
     # print(f"🎯 Rezultat: {result} | Mutări: {move_count}")
-    total_games = stats['1-0'] + stats['0-1'] + stats['1/2-1/2']
-    print(f"🏁 WHITE {stats['1-0']} | BLACK {stats['0-1']} | DRAW {stats['1/2-1/2']} | Total: {total_games} | Mutări: {move_count}")
+    total_games = stats['1-0'] + stats['0-1'] + stats['1/2-1/2'] + stats['*']
+    print(f"🏁 WHITE {stats['1-0']} | BLACK {stats['0-1']} | DRAW {stats['1/2-1/2']} | Total: {total_games} ")
 
 torch.save(ai_white.model.state_dict(), "trained_model.pth")
 print("💾 Model salvat în 'trained_model.pth'")

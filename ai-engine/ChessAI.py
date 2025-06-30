@@ -34,7 +34,7 @@ class ChessAI:
         self.board = board
         strategy = random.choices(
             ['epsilon', 'model', 'minimax', 'mcts'],
-            weights=[5, 10, 80, 5],
+            weights=[40, 30, 0, 30],
             k=1
         )[0]
 
@@ -88,7 +88,7 @@ class ChessAI:
             value -= len(board.pieces(piece_type, chess.BLACK)) * piece_values[piece_type]
         return value
 
-    def select_move_minimax(self, board: chess.Board, depth: int = 3) -> Optional[chess.Move]:
+    def select_move_minimax(self, board: chess.Board, depth: int = 5) -> Optional[chess.Move]:
         def minimax(board, depth, alpha, beta, maximizing_player):
             if depth == 0 or board.is_game_over():
                 return self.evaluate_board(board), None
@@ -124,7 +124,7 @@ class ChessAI:
         _, best_move = minimax(board, depth, float('-inf'), float('inf'), board.turn)
         return best_move
 
-    def select_move_mcts(self, board: chess.Board, simulations: int = 2) -> Optional[chess.Move]:
+    def select_move_mcts(self, board: chess.Board, simulations: int = 3) -> Optional[chess.Move]:
         from copy import deepcopy
 
         def simulate_random_game(sim_board: chess.Board) -> int:
