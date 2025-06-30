@@ -37,8 +37,8 @@ else:
 optimizer = torch.optim.Adam(ai_white.model.parameters(), lr=0.001)
 loss_fn = torch.nn.CrossEntropyLoss()
 
-num_epochs = 100
-max_moves_per_game = 30
+num_epochs = 1000
+max_moves_per_game = 40
 
 fen_positions = load_fens_from_files()
 
@@ -115,12 +115,15 @@ for epoch in range(num_epochs):
         total_loss += raw_loss
         total_scaled_reward += total_reward
 
-    print(f"📉 Loss total (pe joc): {total_loss:.4f} | 🎁 Reward total: {total_scaled_reward:.2f}")
+    # print(f"📉 Loss total (pe joc): {total_loss:.4f} | 🎁 Reward total: {total_scaled_reward:.2f}")
 
     stats[result] += 1
     # print(f"🎯 Rezultat: {result} | Mutări: {move_count}")
     total_games = stats['1-0'] + stats['0-1'] + stats['1/2-1/2'] + stats['*']
-    print(f"🏁 WHITE {stats['1-0']} | BLACK {stats['0-1']} | DRAW {stats['1/2-1/2']} | Total: {total_games} ")
+
+    if (epoch + 1) % 50 == 0:
+        print(f"🏁 WHITE {stats['1-0']} | BLACK {stats['0-1']} | DRAW {stats['1/2-1/2']} | Total: {total_games} ")
+        torch.save(ai_white.model.state_dict(), "trained_model.pth")
 
 torch.save(ai_white.model.state_dict(), "trained_model.pth")
 print("💾 Model salvat în 'trained_model.pth'")

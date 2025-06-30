@@ -34,7 +34,7 @@ class ChessAI:
         self.board = board
         strategy = random.choices(
             ['epsilon', 'model', 'minimax', 'mcts'],
-            weights=[40, 30, 0, 30],
+            weights=[0, 0.2, 0.8, 0],
             k=1
         )[0]
 
@@ -88,7 +88,7 @@ class ChessAI:
             value -= len(board.pieces(piece_type, chess.BLACK)) * piece_values[piece_type]
         return value
 
-    def select_move_minimax(self, board: chess.Board, depth: int = 5) -> Optional[chess.Move]:
+    def select_move_minimax(self, board: chess.Board, depth: int = 4) -> Optional[chess.Move]:
         def minimax(board, depth, alpha, beta, maximizing_player):
             if depth == 0 or board.is_game_over():
                 return self.evaluate_board(board), None
@@ -124,32 +124,75 @@ class ChessAI:
         _, best_move = minimax(board, depth, float('-inf'), float('inf'), board.turn)
         return best_move
 
-    def select_move_mcts(self, board: chess.Board, simulations: int = 3) -> Optional[chess.Move]:
-        from copy import deepcopy
+    def select_move_mcts(self, board: chess.Board, simulations: int = 20) -> Optional[chess.Move]:
+        from collections import defaultdict
+        import math
+        import time
 
-        def simulate_random_game(sim_board: chess.Board) -> int:
-            while not sim_board.is_game_over():
-                legal_moves = list(sim_board.legal_moves)
-                move = random.choice(legal_moves)
-                sim_board.push(move)
-            result = sim_board.result()
-            if result == "1-0":
-                return 1 if board.turn == chess.WHITE else -1
-            elif result == "0-1":
-                return -1 if board.turn == chess.WHITE else 1
-            else:
-                return 0  # draw
+        class MCTSNode:
+            def __init__(self, board, parent=None, move=None):
+                self.board = board
+                self.parent = parent
+                self.move = move
+                self.children = []
+                self.visits = 0
+                self.wins = 0
+                self.untried_moves = list(board.legal_moves)
 
-        legal_moves = list(board.legal_moves)
-        move_scores = {move: 0 for move in legal_moves}
+            def expand(self):
+                move = self.untried_moves.pop()
+                next_board = self.board.copy()
+                next_board.push(move)
+                child_node = MCTSNode(next_board, parent=self, move=move)
+                self.children.append(child_node)
+                return child_node
 
-        for move in legal_moves:
-            total_score = 0
-            for _ in range(simulations):
-                sim_board = deepcopy(board)
-                sim_board.push(move)
-                total_score += simulate_random_game(sim_board)
-            move_scores[move] = total_score
+            def is_fully_expanded(self):
+                return len(self.untried_moves) == 0
 
-        best_move = max(move_scores.items(), key=lambda item: item[1])[0]
+            def best_child(self, c_param=1.4):
+                choices_weights = [
+                    (child.wins / child.visits) + c_param * math.sqrt(math.log(self.visits) / child.visits)
+                    for child in self.children
+                ]
+                return self.children[choices_weights.index(max(choices_weights))]
+
+            def backpropagate(self, result):
+                self.visits += 1
+                self.wins += result
+                if self.parent:
+                    self.parent.backpropagate(-result)
+
+            def is_terminal_node(self):
+                return self.board.is_game_over()
+
+            def rollout(self):
+                sim_board = self.board.copy()
+                while not sim_board.is_game_over():
+                    legal_moves = list(sim_board.legal_moves)
+                    sim_board.push(random.choice(legal_moves))
+                result = sim_board.result()
+                if result == "1-0":
+                    return 1 if self.board.turn == chess.WHITE else -1
+                elif result == "0-1":
+                    return -1 if self.board.turn == chess.WHITE else 1
+                else:
+                    return 0
+
+        root = MCTSNode(board)
+
+        for _ in range(simulations):
+            node = root
+            # Selection
+            while not node.is_terminal_node() and node.is_fully_expanded():
+                node = node.best_child()
+            # Expansion
+            if not node.is_terminal_node() and not node.is_fully_expanded():
+                node = node.expand()
+            # Simulation
+            result = node.rollout()
+            # Backpropagation
+            node.backpropagate(result)
+
+        best_move = max(root.children, key=lambda c: c.visits).move
         return best_move
