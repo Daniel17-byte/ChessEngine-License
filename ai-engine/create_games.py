@@ -12,13 +12,13 @@ def extract_fens_from_pgn(pgn_path, output_json):
             for move in game.mainline_moves():
                 board.push(move)
                 fens.append(board.fen())
-                if len(fens) >= 5000:
+                if len(fens) >= 20000:
                     break
-            if len(fens) >= 5000:
+            if len(fens) >= 20000:
                 break
 
     with open(output_json, 'w', encoding='utf-8') as json_file:
-        json.dump(fens, json_file, indent=2)
+        json.dump(fens[10000:20000], json_file, indent=2)
 
 # Apel funcție principală
 extract_fens_from_pgn("lichess_db.pgn", "generated_games.json")

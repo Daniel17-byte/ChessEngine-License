@@ -7,7 +7,7 @@ import json
 from collections import Counter
 import random
 
-def load_fens_from_files(filepath="generated_games.json"):
+def load_fens_from_files(filepath="generated_endgames.json"):
     fens = []
     if os.path.exists(filepath):
         with open(filepath, "r") as f:
@@ -38,17 +38,17 @@ optimizer = torch.optim.Adam(ai_white.model.parameters(), lr=0.001)
 loss_fn = torch.nn.CrossEntropyLoss()
 
 num_epochs = 1000
-max_moves_per_game = 40
+max_moves_per_game = 6
 
-fen_positions = load_fens_from_files()
+# fen_positions = load_fens_from_files()
 
 for epoch in range(num_epochs):
-    if fen_positions:
-        fen = random.choice(fen_positions)
-        game.reset_from_fen(fen)
-    else:
-        game.reset()
-
+    # if fen_positions:
+    #     fen = random.choice(fen_positions)
+    #     game.reset_from_fen(fen)
+    # else:
+    #     game.reset()
+    game.reset()
     history = []
     move_count = 0
 
@@ -69,7 +69,7 @@ for epoch in range(num_epochs):
 
     result = game.get_result()
     if result == '1-0':
-        base = 1.0
+        base = 15.0
         if move_count < 10:
             base *= 1.5
         elif move_count < 20:
@@ -80,7 +80,7 @@ for epoch in range(num_epochs):
             base *= 0.8
         reward = {True: base, False: -base}
     elif result == '0-1':
-        base = 1.0
+        base = 15.0
         if move_count < 10:
             base *= 1.5
         elif move_count < 20:
@@ -118,7 +118,7 @@ for epoch in range(num_epochs):
     # print(f"📉 Loss total (pe joc): {total_loss:.4f} | 🎁 Reward total: {total_scaled_reward:.2f}")
 
     stats[result] += 1
-    # print(f"🎯 Rezultat: {result} | Mutări: {move_count}")
+    print(f"🎯 Rezultat: {result} | Mutări: {move_count}")
     total_games = stats['1-0'] + stats['0-1'] + stats['1/2-1/2'] + stats['*']
 
     if (epoch + 1) % 50 == 0:

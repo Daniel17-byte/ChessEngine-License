@@ -33,8 +33,8 @@ class ChessAI:
     def select_move(self, board: chess.Board) -> Optional[chess.Move]:
         self.board = board
         strategy = random.choices(
-            ['epsilon', 'model', 'minimax', 'mcts'],
-            weights=[0, 0.2, 0.8, 0],
+            ['epsilon', 'model', 'minimax', 'mcts', 'best_reward'],
+            weights=[10.0, 20.0, 70.0, 0.0, 0.0],
             k=1
         )[0]
 
@@ -48,6 +48,8 @@ class ChessAI:
             return self.select_move_minimax(board)
         elif strategy == 'mcts':
             return self.select_move_mcts(board)
+        elif strategy == 'best_reward':
+            return self.select_best_reward_path(board)
         return None
 
     def get_best_move_from_model(self, board: chess.Board) -> Optional[chess.Move]:
@@ -75,20 +77,33 @@ class ChessAI:
 
     def evaluate_board(self, board: chess.Board) -> float:
         piece_values = {
-            chess.PAWN: 1,
-            chess.KNIGHT: 3,
-            chess.BISHOP: 3,
-            chess.ROOK: 5,
-            chess.QUEEN: 9,
-            chess.KING: 0
+            chess.PAWN: 1.0,
+            chess.KNIGHT: 3.2,
+            chess.BISHOP: 3.3,
+            chess.ROOK: 5.0,
+            chess.QUEEN: 9.0,
+            chess.KING: 0.0
         }
-        value = 0
-        for piece_type in piece_values:
-            value += len(board.pieces(piece_type, chess.WHITE)) * piece_values[piece_type]
-            value -= len(board.pieces(piece_type, chess.BLACK)) * piece_values[piece_type]
+
+        center_squares = [chess.D4, chess.D5, chess.E4, chess.E5]
+        value = 0.0
+
+        for square in chess.SQUARES:
+            piece = board.piece_at(square)
+            if piece:
+                sign = 1 if piece.color == chess.WHITE else -1
+                piece_type = piece.piece_type
+                val = piece_values[piece_type]
+
+                # Bonus for controlling the center
+                if square in center_squares:
+                    val += 0.1
+
+                value += sign * val
+
         return value
 
-    def select_move_minimax(self, board: chess.Board, depth: int = 4) -> Optional[chess.Move]:
+    def select_move_minimax(self, board: chess.Board, depth: int = 3) -> Optional[chess.Move]:
         def minimax(board, depth, alpha, beta, maximizing_player):
             if depth == 0 or board.is_game_over():
                 return self.evaluate_board(board), None
@@ -124,7 +139,7 @@ class ChessAI:
         _, best_move = minimax(board, depth, float('-inf'), float('inf'), board.turn)
         return best_move
 
-    def select_move_mcts(self, board: chess.Board, simulations: int = 20) -> Optional[chess.Move]:
+    def select_move_mcts(self, board: chess.Board, simulations: int = 3) -> Optional[chess.Move]:
         from collections import defaultdict
         import math
         import time
@@ -196,3 +211,25 @@ class ChessAI:
 
         best_move = max(root.children, key=lambda c: c.visits).move
         return best_move
+
+    def select_best_reward_path(self, board: chess.Board, depth: int = 3) -> Optional[chess.Move]:
+        def dfs(board, current_depth):
+            if current_depth == 0 or board.is_game_over():
+                return self.evaluate_board(board), []
+
+            best_reward = float('-inf')
+            best_path = []
+
+            for move in board.legal_moves:
+                board.push(move)
+                reward, path = dfs(board, current_depth - 1)
+                board.pop()
+
+                if reward > best_reward:
+                    best_reward = reward
+                    best_path = [move] + path
+
+            return best_reward, best_path
+
+        _, best_move_path = dfs(board, depth)
+        return best_move_path[0] if best_move_path else None
