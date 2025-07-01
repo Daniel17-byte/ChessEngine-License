@@ -7,7 +7,7 @@ import json
 from collections import Counter
 import random
 
-def load_fens_from_files(filepath="generated_endgames.json"):
+def load_fens_from_files(filepath="generated_games.json"):
     fens = []
     if os.path.exists(filepath):
         with open(filepath, "r") as f:
@@ -37,18 +37,18 @@ else:
 optimizer = torch.optim.Adam(ai_white.model.parameters(), lr=0.001)
 loss_fn = torch.nn.CrossEntropyLoss()
 
-num_epochs = 1000
-max_moves_per_game = 6
+num_epochs = 500
+max_moves_per_game = 30
 
-# fen_positions = load_fens_from_files()
+fen_positions = load_fens_from_files()
 
 for epoch in range(num_epochs):
-    # if fen_positions:
-    #     fen = random.choice(fen_positions)
-    #     game.reset_from_fen(fen)
-    # else:
-    #     game.reset()
-    game.reset()
+    if fen_positions:
+        fen = random.choice(fen_positions)
+        game.reset_from_fen(fen)
+    else:
+        game.reset()
+    # game.reset()
     history = []
     move_count = 0
 
