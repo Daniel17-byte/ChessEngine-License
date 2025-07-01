@@ -23,7 +23,7 @@ class ChessNet(nn.Module):
         x = F.relu(self.fc2(x))
         x = F.relu(self.fc3(x))
         x = F.relu(self.fc4(x))
-        return self.out(x)
+        return torch.clamp(self.out(x), min=-10.0, max=10.0)
 
 
 def encode_fen(fen: str) -> torch.Tensor:
@@ -75,5 +75,7 @@ def evaluate_position(model, fen: str) -> float:
 
 if __name__ == "__main__":
     model = ChessNet()
+    optimizer = torch.optim.Adam(model.parameters(), lr=0.0001)
+    print("✅ Optimizer creat cu lr=0.0001")
     sample_fen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
     print("Position score:", evaluate_position(model, sample_fen))

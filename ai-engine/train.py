@@ -20,8 +20,8 @@ with open("move_mapping.json") as f:
 
 move_to_idx = {uci: i for i, uci in enumerate(idx_to_move)}
 
-ai_white = ChessAI(is_white=True)
-ai_black = ChessAI(is_white=False)
+ai_white = ChessAI(is_white=True, default_strategy="epsilon")
+ai_black = ChessAI(is_white=False, default_strategy="minimax")
 game = Game(ai_white, ai_black)
 stats = Counter()
 
@@ -29,8 +29,8 @@ optimizer_white = torch.optim.Adam(ai_white.model.parameters(), lr=0.001)
 optimizer_black = torch.optim.Adam(ai_black.model.parameters(), lr=0.001)
 loss_fn = torch.nn.CrossEntropyLoss()
 
-num_epochs = 1000
-max_moves_per_game = 100
+num_epochs = 100
+max_moves_per_game = 40
 
 def compute_base(move_count):
     base = 50.0
@@ -131,7 +131,6 @@ for epoch in range(num_epochs):
         scaled_reward = max(-1.0, min(1.0, total_reward))
         raw_loss = ce_loss.item()
         scaled_loss = ce_loss * scaled_reward
-        # print(f"🔻 Loss: {loss.item():.2f} | Reward: {total_reward:.2f} | {'Alb' if moved_by_white else 'Negru'}")
 
         optimizer.zero_grad()
         scaled_loss.backward()
@@ -139,8 +138,6 @@ for epoch in range(num_epochs):
 
         total_loss += raw_loss
         total_scaled_reward += total_reward
-
-    # print(f"📉 Loss total (pe joc): {total_loss:.4f} | 🎁 Reward total: {total_scaled_reward:.2f}")
 
     stats[result] += 1
     print(f"🎯 Rezultat: {result} | Mutări: {move_count} | 🏆 Reward: Alb = {reward[True]:.2f}, Negru = {reward[False]:.2f} | 📉 Loss: {total_loss:.4f}")
