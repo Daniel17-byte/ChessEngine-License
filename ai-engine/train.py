@@ -31,7 +31,7 @@ optimizer_black = torch.optim.Adam(ai_black.model.parameters(), lr=0.001)
 loss_fn = torch.nn.CrossEntropyLoss()
 
 num_epochs = 100000
-max_moves_per_game = 120
+max_moves_per_game = 60
 
 def compute_base(move_count_):
     base_ = 50.0
@@ -147,11 +147,10 @@ for epoch in range(num_epochs):
         total_scaled_reward += total_reward
 
     stats[result] += 1
-    print(f"🎯 Rezultat: {result} | Mutări: {move_count} | 🏆 Reward: Alb = {reward[True]:.2f}, Negru = {reward[False]:.2f}")
-    # print(f"🏁 WHITE {stats['1-0']} | BLACK {stats['0-1']} | DRAW {stats['1/2-1/2']} | Total: {stats['*']} ")
+    # print(f"🎯 Rezultat: {result} | Mutări: {move_count} | 🏆 Reward: Alb = {reward[True]:.2f}, Negru = {reward[False]:.2f}")
 
     if (epoch + 1) % 50 == 0:
-        print(f"🏁 WHITE {stats['1-0']} | BLACK {stats['0-1']} | DRAW {stats['1/2-1/2']}")
+        print(f"🏁 WHITE {stats['1-0']} | BLACK {stats['0-1']} | DRAW {stats['1/2-1/2']} | Total: {stats['*']} ")
         torch.save(ai_white.model.state_dict(), "trained_model_white.pth")
         torch.save(ai_black.model.state_dict(), "trained_model_black.pth")
         # curr_white = get_weight_sum(ai_white.model)
