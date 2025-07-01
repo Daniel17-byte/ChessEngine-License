@@ -8,12 +8,12 @@ from collections import Counter
 import random
 import chess
 
-def load_fens_from_files(filepath="generated_endgames.json"):
-    fens = []
-    if os.path.exists(filepath):
-        with open(filepath, "r") as f:
-            fens = json.load(f)
-    return fens
+# def load_fens_from_files(filepath="generated_endgames.json"):
+#     fens = []
+#     if os.path.exists(filepath):
+#         with open(filepath, "r") as f:
+#             fens = json.load(f)
+#     return fens
 
 with open("move_mapping.json") as f:
     idx_to_move = json.load(f)
@@ -29,18 +29,42 @@ optimizer_white = torch.optim.Adam(ai_white.model.parameters(), lr=0.001)
 optimizer_black = torch.optim.Adam(ai_black.model.parameters(), lr=0.001)
 loss_fn = torch.nn.CrossEntropyLoss()
 
-num_epochs = 500
-max_moves_per_game = 16
+num_epochs = 1000
+max_moves_per_game = 100
 
-fen_positions = load_fens_from_files()
+def compute_base(move_count):
+    base = 50.0
+    if move_count < 10:
+        base *= 2.6
+    elif move_count < 20:
+        base *= 2.4
+    elif move_count < 30:
+        base *= 2.2
+    elif move_count < 40:
+        base *= 2.0
+    elif move_count < 50:
+        base *= 1.8
+    elif move_count < 60:
+        base *= 1.6
+    elif move_count < 70:
+        base *= 1.4
+    elif move_count < 80:
+        base *= 1.2
+    elif move_count < 90:
+        base *= 1.0
+    else:
+        base *= 0.8
+    return base
+
+# fen_positions = load_fens_from_files()
 
 for epoch in range(num_epochs):
-    if fen_positions:
-        fen = random.choice(fen_positions)
-        game.reset_from_fen(fen)
-    else:
-        game.reset()
-    # game.reset()
+    # if fen_positions:
+    #     fen = random.choice(fen_positions)
+    #     game.reset_from_fen(fen)
+    # else:
+    #     game.reset()
+    game.reset()
     history = []
     move_count = 0
 
@@ -57,31 +81,15 @@ for epoch in range(num_epochs):
             if board_state is not None and move_index is not None:
                 _, move_info = game.make_move(move.uci())
                 step_reward = move_info.get("reward", 0.0)
-                was_white = game.board.turn == chess.BLACK
-                history.append((board_state, move_index, was_white, step_reward))
+                moved_by_white = game.board.turn == chess.BLACK
+                history.append((board_state, move_index, moved_by_white, step_reward))
 
     result = game.get_result()
     if result == '1-0':
-        base = 15.0
-        if move_count < 10:
-            base *= 1.5
-        elif move_count < 20:
-            base *= 1.2
-        elif move_count < 30:
-            base *= 1.0
-        else:
-            base *= 0.8
+        base = compute_base(move_count)
         reward = {True: base, False: -base}
     elif result == '0-1':
-        base = 15.0
-        if move_count < 10:
-            base *= 1.5
-        elif move_count < 20:
-            base *= 1.2
-        elif move_count < 30:
-            base *= 1.0
-        else:
-            base *= 0.8
+        base = compute_base(move_count)
         reward = {True: -base, False: base}
     else:
         piece_values = {
@@ -98,6 +106,7 @@ for epoch in range(num_epochs):
                 black_score += value
         total = white_score + black_score
         if total == 0:
+            print("⚠️ Tabla pare goală la finalul jocului. Verifică inițializarea.")
             reward = {True: 0.0, False: 0.0}
         else:
             ratio = 15.0 / total
@@ -110,19 +119,19 @@ for epoch in range(num_epochs):
     total_scaled_reward = 0.0
 
     # Învățare: aplicăm loss pe fiecare mutare cu reward ca "greutate"
-    for state, move_index, was_white, step_reward in history:
-        model = ai_white.model if was_white else ai_black.model
-        optimizer = optimizer_white if was_white else optimizer_black
+    for state, move_index, moved_by_white, step_reward in history:
+        model = ai_white.model if moved_by_white else ai_black.model
+        optimizer = optimizer_white if moved_by_white else optimizer_black
 
         prediction = model(state)
         target = torch.tensor([move_index])
 
-        total_reward = reward[was_white] + step_reward
+        total_reward = (reward[moved_by_white] + step_reward) / move_count
         ce_loss = loss_fn(prediction, target)
-        scaled_reward = torch.clamp(torch.tensor(total_reward), -1.0, 1.0)
+        scaled_reward = max(-1.0, min(1.0, total_reward))
         raw_loss = ce_loss.item()
         scaled_loss = ce_loss * scaled_reward
-        # print(f"🔻 Loss: {loss.item():.2f} | Reward: {total_reward:.2f} | {'Alb' if was_white else 'Negru'}")
+        # print(f"🔻 Loss: {loss.item():.2f} | Reward: {total_reward:.2f} | {'Alb' if moved_by_white else 'Negru'}")
 
         optimizer.zero_grad()
         scaled_loss.backward()
@@ -134,7 +143,7 @@ for epoch in range(num_epochs):
     # print(f"📉 Loss total (pe joc): {total_loss:.4f} | 🎁 Reward total: {total_scaled_reward:.2f}")
 
     stats[result] += 1
-    print(f"🎯 Rezultat: {result} | Mutări: {move_count} | 🏆 Reward: Alb = {reward[True]:.2f}, Negru = {reward[False]:.2f}")
+    print(f"🎯 Rezultat: {result} | Mutări: {move_count} | 🏆 Reward: Alb = {reward[True]:.2f}, Negru = {reward[False]:.2f} | 📉 Loss: {total_loss:.4f}")
     total_games = stats['1-0'] + stats['0-1'] + stats['1/2-1/2'] + stats['*']
 
     if (epoch + 1) % 50 == 0:

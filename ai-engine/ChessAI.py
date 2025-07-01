@@ -36,7 +36,7 @@ class ChessAI:
         self.board = board
         strategy = random.choices(
             ['epsilon', 'model', 'minimax', 'mcts', 'best_reward'],
-            weights=[20.0, 30.0, 50.0, 0.0, 0.0],
+            weights=[20.0, 40.0, 40.0, 0.0, 0.0],
             k=1
         )[0]
 
@@ -110,7 +110,7 @@ class ChessAI:
 
         return value
 
-    def select_move_minimax(self, board: chess.Board, depth: int = 4) -> Optional[chess.Move]:
+    def select_move_minimax(self, board: chess.Board, depth: int = 2) -> Optional[chess.Move]:
         def minimax(board, depth, alpha, beta, maximizing_player):
             if depth == 0 or board.is_game_over():
                 return self.evaluate_board(board), None

@@ -27,8 +27,42 @@ class ChessNet(nn.Module):
 
 
 def encode_fen(fen: str) -> torch.Tensor:
-    # Dummy encoder: returns zero tensor with correct shape
-    return torch.zeros(773)
+    piece_to_index = {
+        'P': 0, 'N': 1, 'B': 2, 'R': 3, 'Q': 4, 'K': 5,
+        'p': 6, 'n': 7, 'b': 8, 'r': 9, 'q': 10, 'k': 11
+    }
+
+    tensor = torch.zeros(773)
+    parts = fen.split()
+    board_part = parts[0]
+    turn_part = parts[1]
+    castling_part = parts[2]
+    en_passant_part = parts[3]
+
+    # Encode board (64 squares x 12 piece types = 768)
+    rows = board_part.split('/')
+    for i, row in enumerate(rows):
+        col = 0
+        for c in row:
+            if c.isdigit():
+                col += int(c)
+            else:
+                index = piece_to_index.get(c)
+                if index is not None:
+                    square_index = i * 8 + col
+                    tensor[square_index * 12 + index] = 1
+                    col += 1
+
+    # Encode turn (1 bit)
+    tensor[768] = 1 if turn_part == 'w' else 0
+
+    # Encode castling rights (4 bits: KQkq)
+    tensor[769] = 1 if 'K' in castling_part else 0
+    tensor[770] = 1 if 'Q' in castling_part else 0
+    tensor[771] = 1 if 'k' in castling_part else 0
+    tensor[772] = 1 if 'q' in castling_part else 0
+
+    return tensor
 
 
 def evaluate_position(model, fen: str) -> float:
