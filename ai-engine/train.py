@@ -9,12 +9,12 @@ from collections import Counter
 import random
 import chess
 
-def load_fens_from_files(filepath="generated_games.json"):
-    fens = []
-    if os.path.exists(filepath):
-        with open(filepath, "r") as file:
-            fens = json.load(file)
-    return fens
+# def load_fens_from_files(filepath="generated_games.json"):
+#     fens = []
+#     if os.path.exists(filepath):
+#         with open(filepath, "r") as file:
+#             fens = json.load(file)
+#     return fens
 
 with open("move_mapping.json") as f:
     idx_to_move = json.load(f)
@@ -30,8 +30,8 @@ optimizer_white = torch.optim.Adam(ai_white.model.parameters(), lr=0.001)
 optimizer_black = torch.optim.Adam(ai_black.model.parameters(), lr=0.001)
 loss_fn = torch.nn.CrossEntropyLoss()
 
-num_epochs = 1000
-max_moves_per_game = 80
+num_epochs = 100000
+max_moves_per_game = 120
 
 def compute_base(move_count_):
     base_ = 50.0
@@ -57,7 +57,7 @@ def compute_base(move_count_):
         base_ *= 0.8
     return base_
 
-fen_positions = load_fens_from_files()
+# fen_positions = load_fens_from_files()
 
 def get_weight_sum(model_):
     return sum(p.sum().item() for p in model_.parameters())
@@ -66,11 +66,11 @@ prev_white = get_weight_sum(ai_white.model)
 prev_black = get_weight_sum(ai_black.model)
 
 for epoch in range(num_epochs):
-    if fen_positions:
-        fen = random.choice(fen_positions)
-        game.reset_from_fen(fen)
-    else:
-        game.reset()
+    # if fen_positions:
+    #     fen = random.choice(fen_positions)
+    #     game.reset_from_fen(fen)
+    # else:
+    #     game.reset()
     game.reset()
     history = []
     move_count = 0
@@ -113,8 +113,7 @@ for epoch in range(num_epochs):
                 black_score += value
         total = white_score + black_score
         if total == 0:
-            print("⚠️ Tabla pare goală la finalul jocului. Verifică inițializarea.")
-            reward = {True: 0.0, False: 0.0}
+            reward = {True: -10.0, False: -10.0}
         else:
             ratio = 15.0 / total
             reward = {
@@ -152,7 +151,7 @@ for epoch in range(num_epochs):
     # print(f"🏁 WHITE {stats['1-0']} | BLACK {stats['0-1']} | DRAW {stats['1/2-1/2']} | Total: {stats['*']} ")
 
     if (epoch + 1) % 50 == 0:
-        # print(f"🏁 WHITE {stats['1-0']} | BLACK {stats['0-1']} | DRAW {stats['1/2-1/2']} | Total: {total_games} ")
+        print(f"🏁 WHITE {stats['1-0']} | BLACK {stats['0-1']} | DRAW {stats['1/2-1/2']}")
         torch.save(ai_white.model.state_dict(), "trained_model_white.pth")
         torch.save(ai_black.model.state_dict(), "trained_model_black.pth")
         # curr_white = get_weight_sum(ai_white.model)
