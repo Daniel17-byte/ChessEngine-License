@@ -6,6 +6,7 @@ from ChessNet import encode_fen
 import json
 from collections import Counter
 import random
+import chess
 
 def load_fens_from_files(filepath="generated_games.json"):
     fens = []
@@ -19,25 +20,16 @@ with open("move_mapping.json") as f:
 
 move_to_idx = {uci: i for i, uci in enumerate(idx_to_move)}
 
-ai_white = ChessAI()
-ai_black = ChessAI()
-game = Game()
+ai_white = ChessAI(is_white=True)
+ai_black = ChessAI(is_white=False)
+game = Game(ai_white, ai_black)
 stats = Counter()
 
-if os.path.exists("trained_model.pth"):
-    state_dict = torch.load("trained_model.pth")
-    ai_white.model.load_state_dict(state_dict)
-    ai_black.model.load_state_dict(state_dict)
-    ai_white.model.eval()
-    ai_black.model.eval()
-    print("✅ Model încărcat.")
-else:
-    print("⚠️ Fără model anterior — se pornește de la zero.")
-
-optimizer = torch.optim.Adam(ai_white.model.parameters(), lr=0.001)
+optimizer_white = torch.optim.Adam(ai_white.model.parameters(), lr=0.001)
+optimizer_black = torch.optim.Adam(ai_black.model.parameters(), lr=0.001)
 loss_fn = torch.nn.CrossEntropyLoss()
 
-num_epochs = 500
+num_epochs = 1000
 max_moves_per_game = 30
 
 fen_positions = load_fens_from_files()
@@ -65,7 +57,8 @@ for epoch in range(num_epochs):
             if board_state is not None and move_index is not None:
                 _, move_info = game.make_move(move.uci())
                 step_reward = move_info.get("reward", 0.0)
-                history.append((board_state, move_index, game.board.turn, step_reward))
+                was_white = game.board.turn == chess.BLACK
+                history.append((board_state, move_index, was_white, step_reward))
 
     result = game.get_result()
     if result == '1-0':
@@ -98,7 +91,10 @@ for epoch in range(num_epochs):
 
     # Învățare: aplicăm loss pe fiecare mutare cu reward ca "greutate"
     for state, move_index, was_white, step_reward in history:
-        prediction = ai_white.model(state)
+        model = ai_white.model if was_white else ai_black.model
+        optimizer = optimizer_white if was_white else optimizer_black
+
+        prediction = model(state)
         target = torch.tensor([move_index])
 
         total_reward = reward[was_white] + step_reward
@@ -118,12 +114,14 @@ for epoch in range(num_epochs):
     # print(f"📉 Loss total (pe joc): {total_loss:.4f} | 🎁 Reward total: {total_scaled_reward:.2f}")
 
     stats[result] += 1
-    print(f"🎯 Rezultat: {result} | Mutări: {move_count}")
+    print(f"🎯 Rezultat: {result} | Mutări: {move_count} | 🏆 Reward: Alb = {reward[True]:.2f}, Negru = {reward[False]:.2f}")
     total_games = stats['1-0'] + stats['0-1'] + stats['1/2-1/2'] + stats['*']
 
     if (epoch + 1) % 50 == 0:
         print(f"🏁 WHITE {stats['1-0']} | BLACK {stats['0-1']} | DRAW {stats['1/2-1/2']} | Total: {total_games} ")
-        torch.save(ai_white.model.state_dict(), "trained_model.pth")
+        torch.save(ai_white.model.state_dict(), "trained_model_white.pth")
+        torch.save(ai_black.model.state_dict(), "trained_model_black.pth")
 
-torch.save(ai_white.model.state_dict(), "trained_model.pth")
-print("💾 Model salvat în 'trained_model.pth'")
+torch.save(ai_white.model.state_dict(), "trained_model_white.pth")
+torch.save(ai_black.model.state_dict(), "trained_model_black.pth")
+print("💾 Modele salvate în 'trained_model_white.pth' și 'trained_model_black.pth'")

@@ -8,15 +8,17 @@ import os
 
 
 class ChessAI:
-    def __init__(self):
+    def __init__(self, is_white=True):
+        self.is_white = is_white
         self.board = chess.Board()
         self.model = ChessNet()
-        if os.path.exists("trained_model.pth"):
-            self.model.load_state_dict(torch.load("trained_model.pth"))
+        model_path = "trained_model_white.pth" if self.is_white else "trained_model_black.pth"
+        if os.path.exists(model_path):
+            self.model.load_state_dict(torch.load(model_path))
             self.model.eval()
-            print("✅ Model încărcat cu succes din trained_model.pth")
+            print(f"✅ Model încărcat cu succes din {model_path}")
         else:
-            print("⚠️ Model neantrenat — se va antrena de la zero.")
+            print(f"⚠️ Model neantrenat — se va antrena de la zero ({'alb' if self.is_white else 'negru'}).")
         self.model.eval()
         import json
         with open("move_mapping.json") as f:
@@ -103,7 +105,7 @@ class ChessAI:
 
         return value
 
-    def select_move_minimax(self, board: chess.Board, depth: int = 3) -> Optional[chess.Move]:
+    def select_move_minimax(self, board: chess.Board, depth: int = 4) -> Optional[chess.Move]:
         def minimax(board, depth, alpha, beta, maximizing_player):
             if depth == 0 or board.is_game_over():
                 return self.evaluate_board(board), None

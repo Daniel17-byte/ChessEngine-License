@@ -2,15 +2,11 @@ import chess
 from ChessAI import ChessAI
 
 class Game:
-    def __init__(self):
+    def __init__(self, ai_white=None, ai_black=None):
         self.board = chess.Board()
-        self.ai = ChessAI()
+        self.ai_white = ai_white
+        self.ai_black = ai_black
         self.turn = chess.WHITE
-        if self.ai:
-            import torch.nn as nn
-            import torch
-            self.optimizer = torch.optim.Adam(self.ai.model.parameters(), lr=0.001)
-            self.loss_fn = nn.CrossEntropyLoss()
 
     def make_move(self, move_uci=None):
         if self.board.is_game_over():
@@ -96,14 +92,15 @@ class Game:
     def get_fen(self):
         return self.board.fen()
 
-    def ai_move(self):
-        if not self.ai or self.board.is_game_over():
+    def ai_move(self, side):
+        if self.board.is_game_over():
             return None
 
-        if self.board.turn != chess.BLACK:
+        ai = self.ai_white if side == chess.WHITE else self.ai_black
+        if not ai or self.board.turn != side:
             return None
 
-        move = self.ai.select_move(self.board)
+        move = ai.select_move(self.board)
         self.board.push(move)
         return move.uci()
 

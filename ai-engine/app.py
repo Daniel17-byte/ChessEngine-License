@@ -2,11 +2,16 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 from Game import Game
 import chess
+from ChessAI import ChessAI
 
 app = Flask(__name__)
 CORS(app)
 CORS(app, resources={r"/*": {"origins": "http://localhost:3000"}}, supports_credentials=True)
-game = Game()
+
+ai_white = None
+ai_black = ChessAI(is_white=False)
+game = Game(ai_white, ai_black)
+
 
 @app.route('/api/game/get_board', methods=['GET'])
 def get_board():
@@ -67,8 +72,8 @@ def make_move():
             print("==============================")
             return jsonify({'error': 'Invalid move', 'board': game.get_board_fen()}), 400
 
-        if not game.is_game_over() and game.board.turn == chess.BLACK:
-            ai_move = game.ai_move()
+        if not game.is_game_over() and game.board.turn == chess.BLACK and game.ai_black:
+            ai_move = game.ai_move(chess.BLACK)
             print(f"🤖 AI moved: {ai_move}")
             print("==============================")
             return jsonify({
