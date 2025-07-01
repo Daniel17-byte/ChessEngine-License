@@ -36,7 +36,7 @@ class ChessAI:
         self.board = board
         strategy = random.choices(
             ['epsilon', 'model', 'minimax', 'mcts', 'best_reward'],
-            weights=[10.0, 20.0, 70.0, 0.0, 0.0],
+            weights=[20.0, 30.0, 50.0, 0.0, 0.0],
             k=1
         )[0]
 
@@ -78,6 +78,11 @@ class ChessAI:
         return best_move
 
     def evaluate_board(self, board: chess.Board) -> float:
+        if board.is_checkmate():
+            return float('-inf') if board.turn == self.is_white else float('inf')
+        if board.is_stalemate():
+            return -0.5 if board.turn == self.is_white else 0.5
+
         piece_values = {
             chess.PAWN: 1.0,
             chess.KNIGHT: 3.2,

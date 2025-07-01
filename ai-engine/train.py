@@ -8,7 +8,7 @@ from collections import Counter
 import random
 import chess
 
-def load_fens_from_files(filepath="generated_games.json"):
+def load_fens_from_files(filepath="generated_endgames.json"):
     fens = []
     if os.path.exists(filepath):
         with open(filepath, "r") as f:
@@ -29,8 +29,8 @@ optimizer_white = torch.optim.Adam(ai_white.model.parameters(), lr=0.001)
 optimizer_black = torch.optim.Adam(ai_black.model.parameters(), lr=0.001)
 loss_fn = torch.nn.CrossEntropyLoss()
 
-num_epochs = 1000
-max_moves_per_game = 30
+num_epochs = 500
+max_moves_per_game = 16
 
 fen_positions = load_fens_from_files()
 
@@ -84,7 +84,27 @@ for epoch in range(num_epochs):
             base *= 0.8
         reward = {True: -base, False: base}
     else:
-        reward = {True: 0.0, False: 0.0}
+        piece_values = {
+            chess.PAWN: 1, chess.KNIGHT: 3, chess.BISHOP: 3,
+            chess.ROOK: 5, chess.QUEEN: 9
+        }
+        white_score = 0
+        black_score = 0
+        for square, piece in game.board.piece_map().items():
+            value = piece_values.get(piece.piece_type, 0)
+            if piece.color == chess.WHITE:
+                white_score += value
+            else:
+                black_score += value
+        total = white_score + black_score
+        if total == 0:
+            reward = {True: 0.0, False: 0.0}
+        else:
+            ratio = 15.0 / total
+            reward = {
+                True: (white_score - black_score) * ratio,
+                False: (black_score - white_score) * ratio
+            }
 
     total_loss = 0.0
     total_scaled_reward = 0.0
