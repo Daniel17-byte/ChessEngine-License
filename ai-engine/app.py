@@ -9,7 +9,7 @@ CORS(app)
 CORS(app, resources={r"/*": {"origins": "http://localhost:3000"}}, supports_credentials=True)
 
 ai_white = None
-ai_black = ChessAI(is_white=False, default_strategy="model")
+ai_black = ChessAI(is_white=False)
 game = Game(ai_white, ai_black)
 
 
@@ -47,11 +47,7 @@ def make_move():
 
     print(f"➡️  Player move received: {move}")
 
-    try:
-        chess_move = chess.Move.from_uci(move)
-    except:
-        print("❌ Invalid move format.")
-        return jsonify({'error': 'Invalid move format', 'board': game.get_board_fen()}), 400
+    chess_move = chess.Move.from_uci(move)
 
     if chess_move not in game.board.legal_moves:
         print("❌ Move is not legal.")

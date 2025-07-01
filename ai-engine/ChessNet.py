@@ -5,7 +5,7 @@ OUTPUT_SIZE = len(MOVE_MAPPING)
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
+import torch.nn.functional as fun
 
 class ChessNet(nn.Module):
     def __init__(self):
@@ -19,11 +19,11 @@ class ChessNet(nn.Module):
         self.out = nn.Linear(64, OUTPUT_SIZE)
 
     def forward(self, x):
-        x = F.relu(self.fc1(x))
-        x = F.relu(self.fc2(x))
-        x = F.relu(self.fc3(x))
-        x = F.relu(self.fc4(x))
-        return torch.clamp(self.out(x), min=-10.0, max=10.0)
+        x = fun.relu(self.fc1(x))
+        x = fun.relu(self.fc2(x))
+        x = fun.relu(self.fc3(x))
+        x = fun.relu(self.fc4(x))
+        return self.out(x)
 
 
 def encode_fen(fen: str) -> torch.Tensor:
@@ -37,7 +37,6 @@ def encode_fen(fen: str) -> torch.Tensor:
     board_part = parts[0]
     turn_part = parts[1]
     castling_part = parts[2]
-    en_passant_part = parts[3]
 
     # Encode board (64 squares x 12 piece types = 768)
     rows = board_part.split('/')
@@ -71,11 +70,3 @@ def evaluate_position(model, fen: str) -> float:
         input_tensor = encode_fen(fen).unsqueeze(0)  # Ensure correct input encoding
         score = model(input_tensor)
         return score.item()
-
-
-if __name__ == "__main__":
-    model = ChessNet()
-    optimizer = torch.optim.Adam(model.parameters(), lr=0.0001)
-    print("✅ Optimizer creat cu lr=0.0001")
-    sample_fen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
-    print("Position score:", evaluate_position(model, sample_fen))

@@ -1,5 +1,6 @@
 import torch
 import os
+
 from ChessAI import ChessAI
 from Game import Game
 from ChessNet import encode_fen
@@ -8,20 +9,20 @@ from collections import Counter
 import random
 import chess
 
-# def load_fens_from_files(filepath="generated_endgames.json"):
-#     fens = []
-#     if os.path.exists(filepath):
-#         with open(filepath, "r") as f:
-#             fens = json.load(f)
-#     return fens
+def load_fens_from_files(filepath="generated_games.json"):
+    fens = []
+    if os.path.exists(filepath):
+        with open(filepath, "r") as file:
+            fens = json.load(file)
+    return fens
 
 with open("move_mapping.json") as f:
     idx_to_move = json.load(f)
 
 move_to_idx = {uci: i for i, uci in enumerate(idx_to_move)}
 
-ai_white = ChessAI(is_white=True, default_strategy="epsilon")
-ai_black = ChessAI(is_white=False, default_strategy="minimax")
+ai_white = ChessAI(is_white=True)
+ai_black = ChessAI(is_white=False)
 game = Game(ai_white, ai_black)
 stats = Counter()
 
@@ -29,41 +30,47 @@ optimizer_white = torch.optim.Adam(ai_white.model.parameters(), lr=0.001)
 optimizer_black = torch.optim.Adam(ai_black.model.parameters(), lr=0.001)
 loss_fn = torch.nn.CrossEntropyLoss()
 
-num_epochs = 100
-max_moves_per_game = 40
+num_epochs = 1000
+max_moves_per_game = 80
 
-def compute_base(move_count):
-    base = 50.0
-    if move_count < 10:
-        base *= 2.6
-    elif move_count < 20:
-        base *= 2.4
-    elif move_count < 30:
-        base *= 2.2
-    elif move_count < 40:
-        base *= 2.0
-    elif move_count < 50:
-        base *= 1.8
-    elif move_count < 60:
-        base *= 1.6
-    elif move_count < 70:
-        base *= 1.4
-    elif move_count < 80:
-        base *= 1.2
-    elif move_count < 90:
-        base *= 1.0
+def compute_base(move_count_):
+    base_ = 50.0
+    if move_count_ < 10:
+        base_ *= 2.6
+    elif move_count_ < 20:
+        base_ *= 2.4
+    elif move_count_ < 30:
+        base_ *= 2.2
+    elif move_count_ < 40:
+        base_ *= 2.0
+    elif move_count_ < 50:
+        base_ *= 1.8
+    elif move_count_ < 60:
+        base_ *= 1.6
+    elif move_count_ < 70:
+        base_ *= 1.4
+    elif move_count_ < 80:
+        base_ *= 1.2
+    elif move_count_ < 90:
+        base_ *= 1.0
     else:
-        base *= 0.8
-    return base
+        base_ *= 0.8
+    return base_
 
-# fen_positions = load_fens_from_files()
+fen_positions = load_fens_from_files()
+
+def get_weight_sum(model_):
+    return sum(p.sum().item() for p in model_.parameters())
+
+prev_white = get_weight_sum(ai_white.model)
+prev_black = get_weight_sum(ai_black.model)
 
 for epoch in range(num_epochs):
-    # if fen_positions:
-    #     fen = random.choice(fen_positions)
-    #     game.reset_from_fen(fen)
-    # else:
-    #     game.reset()
+    if fen_positions:
+        fen = random.choice(fen_positions)
+        game.reset_from_fen(fen)
+    else:
+        game.reset()
     game.reset()
     history = []
     move_count = 0
@@ -121,6 +128,7 @@ for epoch in range(num_epochs):
     # Învățare: aplicăm loss pe fiecare mutare cu reward ca "greutate"
     for state, move_index, moved_by_white, step_reward in history:
         model = ai_white.model if moved_by_white else ai_black.model
+
         optimizer = optimizer_white if moved_by_white else optimizer_black
 
         prediction = model(state)
@@ -140,14 +148,21 @@ for epoch in range(num_epochs):
         total_scaled_reward += total_reward
 
     stats[result] += 1
-    print(f"🎯 Rezultat: {result} | Mutări: {move_count} | 🏆 Reward: Alb = {reward[True]:.2f}, Negru = {reward[False]:.2f} | 📉 Loss: {total_loss:.4f}")
-    total_games = stats['1-0'] + stats['0-1'] + stats['1/2-1/2'] + stats['*']
+    print(f"🎯 Rezultat: {result} | Mutări: {move_count} | 🏆 Reward: Alb = {reward[True]:.2f}, Negru = {reward[False]:.2f}")
+    # print(f"🏁 WHITE {stats['1-0']} | BLACK {stats['0-1']} | DRAW {stats['1/2-1/2']} | Total: {stats['*']} ")
 
     if (epoch + 1) % 50 == 0:
-        print(f"🏁 WHITE {stats['1-0']} | BLACK {stats['0-1']} | DRAW {stats['1/2-1/2']} | Total: {total_games} ")
+        # print(f"🏁 WHITE {stats['1-0']} | BLACK {stats['0-1']} | DRAW {stats['1/2-1/2']} | Total: {total_games} ")
         torch.save(ai_white.model.state_dict(), "trained_model_white.pth")
         torch.save(ai_black.model.state_dict(), "trained_model_black.pth")
+        # curr_white = get_weight_sum(ai_white.model)
+        # curr_black = get_weight_sum(ai_black.model)
+        # print(f"Δ alb: {curr_white - prev_white:.6f}, Δ negru: {curr_black - prev_black:.6f}")
+        # prev_white = curr_white
+        # prev_black = curr_black
 
+curr_white = get_weight_sum(ai_white.model)
+curr_black = get_weight_sum(ai_black.model)
 torch.save(ai_white.model.state_dict(), "trained_model_white.pth")
 torch.save(ai_black.model.state_dict(), "trained_model_black.pth")
 print("💾 Modele salvate în 'trained_model_white.pth' și 'trained_model_black.pth'")

@@ -1,5 +1,4 @@
 import chess
-from ChessAI import ChessAI
 
 class Game:
     def __init__(self, ai_white=None, ai_black=None):
