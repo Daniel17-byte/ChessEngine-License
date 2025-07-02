@@ -77,6 +77,7 @@ class ChessNet(nn.Module):
         self.fc = nn.Linear(64 * 8 * 8, n_moves)
 
     def forward(self, x):
+        # x: [B,12,8,8]
         x = F.relu(self.bn1(self.conv1(x)))
         x = F.relu(self.bn2(self.conv2(x)))
         x = x.view(x.size(0), -1)
@@ -161,18 +162,23 @@ def main():
                     board.push(move)
             print(f"Chunk: {len(games)} games, {len(white_samples)} white samples, {len(black_samples)} black samples")
             # create loaders and train one epoch per chunk
-            w_loader = DataLoader(ChessDataset(white_samples, w2i),
-                                  batch_size=args.batch_size, shuffle=True,
-                                  num_workers=2, pin_memory=True)
-            b_loader = DataLoader(ChessDataset(black_samples, b2i),
-                                  batch_size=args.batch_size, shuffle=True,
-                                  num_workers=2, pin_memory=True)
+            w_loader = DataLoader(
+                ChessDataset(white_samples, w2i),
+                batch_size=args.batch_size, shuffle=True,
+                num_workers=2, pin_memory=True
+            )
+            b_loader = DataLoader(
+                ChessDataset(black_samples, b2i),
+                batch_size=args.batch_size, shuffle=True,
+                num_workers=2, pin_memory=True
+            )
             train(net_w, w_loader, device, epochs=1)
             train(net_b, b_loader, device, epochs=1)
-            # Save models after each chunk
-            torch.save(net_w.state_dict(), f'trained_model_white_chunk{chunk_idx}.pth')
-            torch.save(net_b.state_dict(), f'trained_model_black_chunk{chunk_idx}.pth')
-            print(f"Saved models after chunk {chunk_idx}")
+
+            if chunk_idx % 100 == 0:
+                torch.save(net_w.state_dict(), f'trained_model_white_chunk{chunk_idx}.pth')
+                torch.save(net_b.state_dict(), f'trained_model_black_chunk{chunk_idx}.pth')
+                print(f"Saved models at chunk {chunk_idx}")
 
     # Save final models
     torch.save(net_w.state_dict(), 'trained_model_white.pth')
