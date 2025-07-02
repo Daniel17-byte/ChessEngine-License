@@ -1,8 +1,6 @@
 import torch
 import os
 
-from fsspec.registry import default
-
 from ChessAI import ChessAI
 from Game import Game
 import json
@@ -33,8 +31,8 @@ optimizer_white = torch.optim.Adam(ai_white.model.parameters(), lr=0.001)
 optimizer_black = torch.optim.Adam(ai_black.model.parameters(), lr=0.001)
 loss_fn = torch.nn.CrossEntropyLoss()
 
-num_epochs = 1000
-max_moves_per_game = 40
+num_epochs = 100
+max_moves_per_game = 100
 
 def compute_base(move_count_):
     base_ = 50.0
@@ -152,15 +150,15 @@ for epoch in range(num_epochs):
     stats[result] += 1
     print(f"🎯 Rezultat: {result} | Mutări: {move_count} | 🏆 Reward: Alb = {reward[True]:.2f}, Negru = {reward[False]:.2f}")
 
-    if (epoch + 1) % 50 == 0:
+    if (epoch + 1) % 10 == 0:
         print(f"🏁 WHITE {stats['1-0']} | BLACK {stats['0-1']} | DRAW {stats['1/2-1/2']} | Total: {stats['*']} ")
         torch.save(ai_white.model.state_dict(), "trained_model_white.pth")
         torch.save(ai_black.model.state_dict(), "trained_model_black.pth")
-        # curr_white = get_weight_sum(ai_white.model)
-        # curr_black = get_weight_sum(ai_black.model)
-        # print(f"Δ alb: {curr_white - prev_white:.6f}, Δ negru: {curr_black - prev_black:.6f}")
-        # prev_white = curr_white
-        # prev_black = curr_black
+        curr_white = get_weight_sum(ai_white.model)
+        curr_black = get_weight_sum(ai_black.model)
+        print(f"Δ alb: {curr_white - prev_white:.6f}, Δ negru: {curr_black - prev_black:.6f}")
+        prev_white = curr_white
+        prev_black = curr_black
 
 curr_white = get_weight_sum(ai_white.model)
 curr_black = get_weight_sum(ai_black.model)

@@ -2,7 +2,8 @@ import chess
 import chess.engine
 import random
 from typing import Optional
-from ArchiveAlpha import ChessNet, encode_board
+from ArchiveAlpha import encode_board
+from ChessNet import ChessNet
 import torch
 import os
 
@@ -22,7 +23,6 @@ class ChessAI:
             try:
 
                 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-                print(f"Using device: {device}")
                 net_b = ChessNet(len(move_list))
                 net_b.to(device)
 
@@ -55,7 +55,7 @@ class ChessAI:
         if strategy is None:
             strategy = random.choices(
                 ['epsilon', 'model', 'minimax'],
-                weights=[0.0, 100.0, 0.0],
+                weights=[30.0, 40.0, 30.0],
                 k=1
             )[0]
 

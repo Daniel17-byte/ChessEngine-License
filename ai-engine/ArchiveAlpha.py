@@ -1,11 +1,10 @@
-#!/usr/bin/env python3
 import argparse
 import chess
 import chess.pgn
 import numpy as np
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
+from ChessNet import ChessNet
 from torch.utils.data import Dataset, DataLoader
 import os
 import json
@@ -66,56 +65,6 @@ def encode_board(board):
         file = chess.square_file(square)
         arr[plane, rank, file] = 1.0
     return torch.from_numpy(arr)
-
-def self_play_games(model, move_map, device, num_games=100, max_moves=200):
-    """
-    Generate self-play samples by having the model play against itself.
-    Returns a list of (fen, uci) tuples.
-    """
-    samples = []
-    model.eval()
-    for _ in range(num_games):
-        board = chess.Board()
-        while not board.is_game_over() and board.fullmove_number < max_moves:
-            # prepare input
-            tensor = encode_board(board).unsqueeze(0).to(device)
-            with torch.no_grad():
-                logits = model(tensor)
-                probs = torch.softmax(logits, dim=1).cpu().numpy().flatten()
-            # filter legal moves and their probabilities
-            legal = list(board.legal_moves)
-            legal_probs = []
-            legal_moves = []
-            for m in legal:
-                u = m.uci()
-                if u in move_map:
-                    legal_moves.append(m)
-                    legal_probs.append(float(probs[move_map[u]]))
-            if not legal_moves:
-                move = random.choice(legal)
-            else:
-                move = random.choices(legal_moves, weights=legal_probs, k=1)[0]
-            samples.append((board.fen(), move.uci()))
-            board.push(move)
-    return samples
-
-# ── model ────────────────────────────────────────────────────────────────────
-
-class ChessNet(nn.Module):
-    def __init__(self, n_moves):
-        super().__init__()
-        self.conv1 = nn.Conv2d(12, 64, kernel_size=3, padding=1)
-        self.bn1 = nn.BatchNorm2d(64)
-        self.conv2 = nn.Conv2d(64, 64, kernel_size=3, padding=1)
-        self.bn2 = nn.BatchNorm2d(64)
-        self.fc = nn.Linear(64 * 8 * 8, n_moves)
-
-    def forward(self, x):
-        # x: [B,12,8,8]
-        x = F.relu(self.bn1(self.conv1(x)))
-        x = F.relu(self.bn2(self.conv2(x)))
-        x = x.view(x.size(0), -1)
-        return self.fc(x)
 
 # ── training loop ───────────────────────────────────────────────────────────
 
