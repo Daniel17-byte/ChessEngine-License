@@ -2,29 +2,43 @@ import chess
 import chess.engine
 import random
 from typing import Optional
-from ChessNet import ChessNet
+from train2 import ChessNet, encode_board
 import torch
 import os
 
+import json
+with open('move_mapping.json', 'r', encoding='utf-8') as fmap:
+    move_list = json.load(fmap)
+w2i = {m: i for i, m in enumerate(move_list)}
+b2i = w2i
 
 class ChessAI:
     def __init__(self, is_white=True, default_strategy: Optional[str] = None):
         self.is_white = is_white
         self.board = chess.Board()
-        self.model = ChessNet()
+        self.model = ChessNet(len(move_list))
         model_path = "trained_model_white.pth" if self.is_white else "trained_model_black.pth"
         if os.path.exists(model_path):
-            self.model.load_state_dict(torch.load(model_path))
-            self.model.eval()
-            print(f"✅ Model încărcat cu succes din {model_path}")
-            print(f"📊 Sumă ponderi model: {sum(p.sum().item() for p in self.model.parameters()):.4f}")
+            try:
+
+                device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+                print(f"Using device: {device}")
+                net_b = ChessNet(len(move_list))
+                net_b.to(device)
+
+                print(f"✅ Model încărcat cu succes din {model_path}")
+            except RuntimeError as e:
+                print(f"⚠️ Nu s-a putut încărca modelul din {model_path}: {e}")
+                print("⚠️ Se va antrena de la zero.")
         else:
-            print(f"⚠️ Model neantrenat — se va antrena de la zero ({'alb' if self.is_white else 'negru'}).")
-        self.model.eval()
+            print(f"⚠️ Modelul nu a fost găsit ({model_path}) — se va antrena de la zero.")
+
         import json
         with open("move_mapping.json") as f:
             self.idx_to_move = json.load(f)
         self.move_to_idx = {uci: i for i, uci in enumerate(self.idx_to_move)}
+
+        self.model.eval()
         self.epsilon = 0.2
         self.default_strategy = default_strategy
 
@@ -41,11 +55,11 @@ class ChessAI:
         if strategy is None:
             strategy = random.choices(
                 ['epsilon', 'model', 'minimax'],
-                weights=[40.0, 20.0, 40.0],
+                weights=[0.0, 100.0, 0.0],
                 k=1
             )[0]
 
-        # print("Strategy chose : " + strategy)
+        print(strategy)
 
         if strategy == 'epsilon':
             return random.choice(list(self.board.legal_moves))
@@ -57,8 +71,7 @@ class ChessAI:
 
     def get_best_move_from_model(self, board: chess.Board) -> Optional[chess.Move]:
         self.board = board
-        from ChessNet import encode_fen
-        board_tensor = encode_fen(board.fen()).unsqueeze(0)
+        board_tensor = encode_board(board).unsqueeze(0)
 
         legal_moves = list(board.legal_moves)
         legal_indices = [self.move_to_index(m.uci()) for m in legal_moves]
@@ -76,6 +89,8 @@ class ChessAI:
         if best_move not in self.board.legal_moves:
             print(f"⚠️ Predicted move {best_move} is not legal in the current board position.")
             return random.choice(legal_moves)
+
+        print(f"{prediction}")
 
         return best_move
 

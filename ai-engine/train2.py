@@ -9,6 +9,8 @@ import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
 import os
 import json
+from torch.cuda.amp import GradScaler, autocast
+import random
 
 # ── dataset utilities ─────────────────────────────────────────────────────────
 
@@ -65,6 +67,38 @@ def encode_board(board):
         arr[plane, rank, file] = 1.0
     return torch.from_numpy(arr)
 
+def self_play_games(model, move_map, device, num_games=100, max_moves=200):
+    """
+    Generate self-play samples by having the model play against itself.
+    Returns a list of (fen, uci) tuples.
+    """
+    samples = []
+    model.eval()
+    for _ in range(num_games):
+        board = chess.Board()
+        while not board.is_game_over() and board.fullmove_number < max_moves:
+            # prepare input
+            tensor = encode_board(board).unsqueeze(0).to(device)
+            with torch.no_grad():
+                logits = model(tensor)
+                probs = torch.softmax(logits, dim=1).cpu().numpy().flatten()
+            # filter legal moves and their probabilities
+            legal = list(board.legal_moves)
+            legal_probs = []
+            legal_moves = []
+            for m in legal:
+                u = m.uci()
+                if u in move_map:
+                    legal_moves.append(m)
+                    legal_probs.append(float(probs[move_map[u]]))
+            if not legal_moves:
+                move = random.choice(legal)
+            else:
+                move = random.choices(legal_moves, weights=legal_probs, k=1)[0]
+            samples.append((board.fen(), move.uci()))
+            board.push(move)
+    return samples
+
 # ── model ────────────────────────────────────────────────────────────────────
 
 class ChessNet(nn.Module):
@@ -89,17 +123,26 @@ def train(model, loader, device, epochs=5, lr=1e-3):
     criterion = nn.CrossEntropyLoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=1e-4)
     model.to(device)
+    scaler = GradScaler() if device.type == 'cuda' else None
     for ep in range(1, epochs+1):
         print(f"\nEpoch {ep}/{epochs} - training on {len(loader.dataset)} samples in {len(loader)} batches")
         model.train()
         total_loss = 0.0
         for batch_idx, (xb, yb) in enumerate(loader, start=1):
             xb, yb = xb.to(device), yb.to(device)
-            logits = model(xb)
-            loss = criterion(logits, yb)
             optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
+            if scaler:
+                with autocast():
+                    logits = model(xb)
+                    loss = criterion(logits, yb)
+                scaler.scale(loss).backward()
+                scaler.step(optimizer)
+                scaler.update()
+            else:
+                logits = model(xb)
+                loss = criterion(logits, yb)
+                loss.backward()
+                optimizer.step()
             if batch_idx % 10 == 0:
                 print(f"  Batch {batch_idx}/{len(loader)} - loss: {loss.item():.4f}")
             total_loss += loss.item() * xb.size(0)
@@ -118,8 +161,10 @@ def main():
                    help='number of games to process per chunk')
     p.add_argument('--resume_chunk', type=int, default=0,
                    help='chunk index to resume training from (0 to start fresh)')
+    p.add_argument('--num_workers', type=int, default=4,
+                   help='number of DataLoader worker processes')
     args = p.parse_args()
-    print(f"Arguments: pgn={args.pgn}, epochs={args.epochs}, batch_size={args.batch_size}")
+    print(f"Arguments: pgn={args.pgn}, epochs={args.epochs}, batch_size={args.batch_size}, num_workers={args.num_workers}")
 
     # Load static move mappings from JSON file
     print("Loading move mappings from move_mapping.json...")
@@ -130,7 +175,13 @@ def main():
     print(f"Loaded {len(move_list)} moves from mapping file.")
 
     # Initialize device and networks
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    # Select device: prefer MPS on Mac, then CUDA, then CPU
+    if torch.backends.mps.is_available():
+        device = torch.device('mps')
+    elif torch.cuda.is_available():
+        device = torch.device('cuda')
+    else:
+        device = torch.device('cpu')
     print(f"Using device: {device}")
     net_w = ChessNet(len(move_list))
     net_b = ChessNet(len(move_list))
@@ -186,12 +237,14 @@ def main():
             w_loader = DataLoader(
                 ChessDataset(white_samples, w2i),
                 batch_size=args.batch_size, shuffle=True,
-                num_workers=2, pin_memory=True
+                num_workers=args.num_workers, pin_memory=True,
+                prefetch_factor=2, persistent_workers=True
             )
             b_loader = DataLoader(
                 ChessDataset(black_samples, b2i),
                 batch_size=args.batch_size, shuffle=True,
-                num_workers=2, pin_memory=True
+                num_workers=args.num_workers, pin_memory=True,
+                prefetch_factor=2, persistent_workers=True
             )
             train(net_w, w_loader, device, epochs=1)
             train(net_b, b_loader, device, epochs=1)

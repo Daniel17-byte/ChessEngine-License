@@ -9,7 +9,7 @@ CORS(app)
 CORS(app, resources={r"/*": {"origins": "http://localhost:3000"}}, supports_credentials=True)
 
 ai_white = None
-ai_black = ChessAI(is_white=False)
+ai_black = ChessAI(is_white=False, default_strategy="model")
 game = Game(ai_white, ai_black)
 
 
