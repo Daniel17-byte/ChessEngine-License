@@ -116,6 +116,8 @@ def main():
     p.add_argument('--batch_size', type=int, default=128)
     p.add_argument('--chunk_size', type=int, default=100,
                    help='number of games to process per chunk')
+    p.add_argument('--resume_chunk', type=int, default=0,
+                   help='chunk index to resume training from (0 to start fresh)')
     args = p.parse_args()
     print(f"Arguments: pgn={args.pgn}, epochs={args.epochs}, batch_size={args.batch_size}")
 
@@ -135,10 +137,29 @@ def main():
     net_w.to(device)
     net_b.to(device)
 
+    # Determine starting chunk and load checkpoint if resuming
+    chunk_idx = args.resume_chunk
+    if args.resume_chunk > 0:
+        # Load checkpoint for both models
+        ckpt_w = f'trained_model_white_chunk{chunk_idx}.pth'
+        ckpt_b = f'trained_model_black_chunk{chunk_idx}.pth'
+        if os.path.exists(ckpt_w) and os.path.exists(ckpt_b):
+            print(f"Resuming from chunk {chunk_idx}: loading {ckpt_w} and {ckpt_b}")
+            state_w = torch.load(ckpt_w, map_location=device)
+            state_b = torch.load(ckpt_b, map_location=device)
+            net_w.load_state_dict(state_w, strict=False)
+            net_b.load_state_dict(state_b, strict=False)
+            print("✅ Checkpoint loaded.")
+        else:
+            print(f"⚠️ Checkpoints for chunk {chunk_idx} not found, starting fresh.")
+
     # Chunked training over PGN
-    print("Starting chunked training...")
-    chunk_idx = 0
     with open(args.pgn, 'r', encoding='utf-8') as f:
+        # Skip already-processed games
+        games_to_skip = args.resume_chunk * args.chunk_size
+        for _ in range(games_to_skip):
+            if chess.pgn.read_game(f) is None:
+                break
         while True:
             chunk_idx += 1
             games = []
