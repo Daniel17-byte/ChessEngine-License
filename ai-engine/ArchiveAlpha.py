@@ -198,7 +198,7 @@ def main():
             train(net_w, w_loader, device, epochs=1)
             train(net_b, b_loader, device, epochs=1)
 
-            if chunk_idx % 100 == 0:
+            if chunk_idx % 10 == 0:
                 torch.save(net_w.state_dict(), f'trained_model_white_chunk{chunk_idx}.pth')
                 torch.save(net_b.state_dict(), f'trained_model_black_chunk{chunk_idx}.pth')
                 print(f"Saved models at chunk {chunk_idx}")

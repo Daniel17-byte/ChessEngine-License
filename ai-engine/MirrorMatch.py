@@ -9,6 +9,8 @@ import random
 import chess
 
 from ArchiveAlpha import encode_board
+import math
+import torch.nn.utils
 
 # Load move mapping for training
 with open('move_mapping.json', 'r', encoding='utf-8') as f:
@@ -31,32 +33,15 @@ optimizer_white = torch.optim.Adam(ai_white.model.parameters(), lr=0.001)
 optimizer_black = torch.optim.Adam(ai_black.model.parameters(), lr=0.001)
 loss_fn = torch.nn.CrossEntropyLoss()
 
-num_epochs = 100
-max_moves_per_game = 100
+num_epochs = 1000
+max_moves_per_game = 40
 
 def compute_base(move_count_):
     base_ = 50.0
-    if move_count_ < 10:
-        base_ *= 2.6
-    elif move_count_ < 20:
-        base_ *= 2.4
-    elif move_count_ < 30:
-        base_ *= 2.2
-    elif move_count_ < 40:
-        base_ *= 2.0
-    elif move_count_ < 50:
-        base_ *= 1.8
-    elif move_count_ < 60:
-        base_ *= 1.6
-    elif move_count_ < 70:
-        base_ *= 1.4
-    elif move_count_ < 80:
-        base_ *= 1.2
-    elif move_count_ < 90:
-        base_ *= 1.0
-    else:
-        base_ *= 0.8
-    return base_
+    # Exponential decay based on move count
+    k = 3.0
+    decay = math.exp(-k * move_count_ / max_moves_per_game)
+    return base_ * decay
 
 # fen_positions = load_fens_from_files()
 
@@ -124,6 +109,7 @@ for epoch in range(num_epochs):
 
     total_loss = 0.0
     total_scaled_reward = 0.0
+    total_raw_loss = 0.0
 
     # Învățare: aplicăm loss pe fiecare mutare cu reward ca "greutate"
     for state, move_index, moved_by_white, step_reward in history:
@@ -136,19 +122,31 @@ for epoch in range(num_epochs):
 
         total_reward = (reward[moved_by_white] + step_reward) / move_count
         ce_loss = loss_fn(prediction, target)
-        scaled_reward = max(-1.0, min(1.0, total_reward))
-        raw_loss = ce_loss.item()
+        # accumulate raw cross-entropy loss
+        raw_loss_value = ce_loss.item()
+        total_raw_loss += raw_loss_value
+
+        # reshape reward smoothly via tanh
+        scaled_reward = math.tanh(total_reward / 10.0)
+
+        # compute scaled loss
         scaled_loss = ce_loss * scaled_reward
+        scaled_loss_value = scaled_loss.item()
 
         optimizer.zero_grad()
         scaled_loss.backward()
+        # gradient clipping to stabilize
+        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         optimizer.step()
 
-        total_loss += raw_loss
+        total_loss += scaled_loss_value
         total_scaled_reward += total_reward
 
+    avg_raw_loss = total_raw_loss / len(history) if history else 0.0
+    avg_loss = total_loss / len(history) if history else 0.0
+    avg_reward = total_scaled_reward / len(history) if history else 0.0
     stats[result] += 1
-    print(f"🎯 Rezultat: {result} | Mutări: {move_count} | 🏆 Reward: Alb = {reward[True]:.2f}, Negru = {reward[False]:.2f}")
+    print(f"🏋️ Epoch {epoch+1} | Raw loss: {avg_raw_loss:.4f} | Scaled loss: {avg_loss:.4f} | Reward mediu: {avg_reward:.4f} | 🎯 Rezultat: {result} | Mutări: {move_count} | 🏆 Reward final: Alb = {reward[True]:.2f}, Negru = {reward[False]:.2f}")
 
     if (epoch + 1) % 10 == 0:
         print(f"🏁 WHITE {stats['1-0']} | BLACK {stats['0-1']} | DRAW {stats['1/2-1/2']} | Total: {stats['*']} ")
