@@ -2,7 +2,7 @@ import chess
 import chess.engine
 import random
 from typing import Optional
-from train2 import ChessNet, encode_board
+from ArchiveAlpha import ChessNet, encode_board
 import torch
 import os
 
@@ -59,8 +59,6 @@ class ChessAI:
                 k=1
             )[0]
 
-        print(strategy)
-
         if strategy == 'epsilon':
             return random.choice(list(self.board.legal_moves))
         elif strategy == 'model':
@@ -89,8 +87,6 @@ class ChessAI:
         if best_move not in self.board.legal_moves:
             print(f"⚠️ Predicted move {best_move} is not legal in the current board position.")
             return random.choice(legal_moves)
-
-        print(f"{prediction}")
 
         return best_move
 

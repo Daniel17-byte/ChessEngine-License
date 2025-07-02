@@ -1,13 +1,21 @@
 import torch
 import os
 
+from fsspec.registry import default
+
 from ChessAI import ChessAI
 from Game import Game
-from ChessNet import encode_fen
 import json
 from collections import Counter
 import random
 import chess
+
+from ArchiveAlpha import encode_board
+
+# Load move mapping for training
+with open('move_mapping.json', 'r', encoding='utf-8') as f:
+    move_list = json.load(f)
+move_to_idx = {m: i for i, m in enumerate(move_list)}
 
 # def load_fens_from_files(filepath="generated_games.json"):
 #     fens = []
@@ -16,13 +24,8 @@ import chess
 #             fens = json.load(file)
 #     return fens
 
-with open("move_mapping.json") as f:
-    idx_to_move = json.load(f)
-
-move_to_idx = {uci: i for i, uci in enumerate(idx_to_move)}
-
-ai_white = ChessAI(is_white=True)
-ai_black = ChessAI(is_white=False)
+ai_white = ChessAI(is_white=True, default_strategy="model")
+ai_black = ChessAI(is_white=False, default_strategy="model")
 game = Game(ai_white, ai_black)
 stats = Counter()
 
@@ -30,8 +33,8 @@ optimizer_white = torch.optim.Adam(ai_white.model.parameters(), lr=0.001)
 optimizer_black = torch.optim.Adam(ai_black.model.parameters(), lr=0.001)
 loss_fn = torch.nn.CrossEntropyLoss()
 
-num_epochs = 100000
-max_moves_per_game = 60
+num_epochs = 1000
+max_moves_per_game = 40
 
 def compute_base(move_count_):
     base_ = 50.0
@@ -82,7 +85,7 @@ for epoch in range(num_epochs):
         move = current_ai.select_move(game.board)
 
         if move:
-            board_state = encode_fen(game.get_fen()).unsqueeze(0)
+            board_state = encode_board(chess.Board(game.get_fen())).unsqueeze(0)
             move_index = move_to_idx.get(move.uci())
 
             if board_state is not None and move_index is not None:
@@ -147,7 +150,7 @@ for epoch in range(num_epochs):
         total_scaled_reward += total_reward
 
     stats[result] += 1
-    # print(f"🎯 Rezultat: {result} | Mutări: {move_count} | 🏆 Reward: Alb = {reward[True]:.2f}, Negru = {reward[False]:.2f}")
+    print(f"🎯 Rezultat: {result} | Mutări: {move_count} | 🏆 Reward: Alb = {reward[True]:.2f}, Negru = {reward[False]:.2f}")
 
     if (epoch + 1) % 50 == 0:
         print(f"🏁 WHITE {stats['1-0']} | BLACK {stats['0-1']} | DRAW {stats['1/2-1/2']} | Total: {stats['*']} ")
