@@ -24,8 +24,8 @@ move_to_idx = {m: i for i, m in enumerate(move_list)}
 #             fens = json.load(file)
 #     return fens
 
-ai_white = ChessAI(is_white=True, default_strategy="model")
-ai_black = ChessAI(is_white=False, default_strategy="model")
+ai_white = ChessAI(is_white=True)
+ai_black = ChessAI(is_white=False)
 game = Game(ai_white, ai_black)
 stats = Counter()
 
@@ -37,7 +37,7 @@ num_epochs = 1000
 max_moves_per_game = 40
 
 def compute_base(move_count_):
-    base_ = 50.0
+    base_ = 5.0
     # Exponential decay based on move count
     k = 3.0
     decay = math.exp(-k * move_count_ / max_moves_per_game)
@@ -126,12 +126,11 @@ for epoch in range(num_epochs):
         raw_loss_value = ce_loss.item()
         total_raw_loss += raw_loss_value
 
-        # reshape reward smoothly via tanh
-        scaled_reward = math.tanh(total_reward / 10.0)
+        clamped_reward = max(min(total_reward, 5.0), -5.0)
+        scaled_reward = math.tanh(clamped_reward / 10.0)
 
-        # compute scaled loss
-        scaled_loss = ce_loss * scaled_reward
-        scaled_loss_value = scaled_loss.item()
+        weight = 1.0 + scaled_reward  # Keeps loss positive, avoids flipped gradients
+        scaled_loss = ce_loss * weight
 
         optimizer.zero_grad()
         scaled_loss.backward()
@@ -139,7 +138,7 @@ for epoch in range(num_epochs):
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         optimizer.step()
 
-        total_loss += scaled_loss_value
+        total_loss += scaled_loss.item()
         total_scaled_reward += total_reward
 
     avg_raw_loss = total_raw_loss / len(history) if history else 0.0
@@ -152,11 +151,6 @@ for epoch in range(num_epochs):
         print(f"🏁 WHITE {stats['1-0']} | BLACK {stats['0-1']} | DRAW {stats['1/2-1/2']} | Total: {stats['*']} ")
         torch.save(ai_white.model.state_dict(), "trained_model_white.pth")
         torch.save(ai_black.model.state_dict(), "trained_model_black.pth")
-        curr_white = get_weight_sum(ai_white.model)
-        curr_black = get_weight_sum(ai_black.model)
-        print(f"Δ alb: {curr_white - prev_white:.6f}, Δ negru: {curr_black - prev_black:.6f}")
-        prev_white = curr_white
-        prev_black = curr_black
 
 curr_white = get_weight_sum(ai_white.model)
 curr_black = get_weight_sum(ai_black.model)
