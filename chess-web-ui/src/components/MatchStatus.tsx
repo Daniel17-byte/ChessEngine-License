@@ -1,11 +1,11 @@
 "use client";
 
 import React from "react";
-import { useChess } from "../context/ChessContext";
+import { GameType, useChess } from "../context/ChessContext";
 import styles from "./MatchStatus.module.css";
 
 export const MatchStatus: React.FC = () => {
-    const { moveCount, isGameOver, lastAiMove, isCheck } = useChess();
+    const { moveCount, isGameOver, lastAiMove, isCheck, gameType, pvpMatchId, opponentId } = useChess();
 
     return (
         <div className={styles.statusBar}>
@@ -14,10 +14,17 @@ export const MatchStatus: React.FC = () => {
                 <span className={styles.value}>{moveCount}</span>
             </div>
 
-            {lastAiMove && (
+            {gameType === GameType.AI && lastAiMove && (
                 <div className={styles.statusItem}>
                     <span className={styles.label}>AI Move</span>
                     <span className={`${styles.value} ${styles.move}`}>{lastAiMove}</span>
+                </div>
+            )}
+
+            {gameType === GameType.PVP && (
+                <div className={styles.statusItem}>
+                    <span className={styles.label}>Match</span>
+                    <span className={styles.value}>{pvpMatchId ? `#${pvpMatchId}` : "Live"}{opponentId ? ` vs ${opponentId}` : ""}</span>
                 </div>
             )}
 

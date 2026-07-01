@@ -5,5 +5,6 @@ numpy
 Cython
 flask-cors~=6.0.1
 flask-socketio~=5.6.1
+pytest~=8.3
 # Optional: numba (fallback for board encoding if Cython is not compiled)
 # numba

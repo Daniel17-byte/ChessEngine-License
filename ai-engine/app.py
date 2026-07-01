@@ -11,17 +11,90 @@ import subprocess
 import sys
 import os
 import re
+import time
 
 app = Flask(__name__)
 CORS(app, resources={r"/*": {"origins": "*"}}, supports_credentials=True)
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode="threading")
 
-ai_white = None
-ai_black = ChessAI(is_white=False, default_strategy="model")
-game = Game(ai_white, ai_black)
+DEFAULT_SESSION_ID = "default"
+SESSION_TTL_SECONDS = int(os.getenv("GAME_SESSION_TTL_SECONDS", "1800"))
+SESSION_CLEANUP_INTERVAL_SECONDS = int(os.getenv("GAME_SESSION_CLEANUP_INTERVAL_SECONDS", "60"))
+session_lock = threading.Lock()
+last_session_cleanup_ts = 0.0
 
-# Track player color for current game (white or black)
-player_color = chess.WHITE  # Default: player is white
+
+def create_session(game_type="ai", player_color=chess.WHITE, ai_strategy="model"):
+    now = time.time()
+    ai_white = ChessAI(is_white=True, default_strategy=ai_strategy) if game_type == "ai" and player_color == chess.BLACK else None
+    ai_black = ChessAI(is_white=False, default_strategy=ai_strategy) if game_type == "ai" and player_color == chess.WHITE else None
+    return {
+        "game": Game(ai_white, ai_black),
+        "game_type": game_type,
+        "default_player_color": player_color,
+        "player_colors": {},
+        "created_at": now,
+        "last_accessed": now,
+    }
+
+
+game_sessions = {
+    DEFAULT_SESSION_ID: create_session(),
+}
+
+
+def resolve_match_id(data=None):
+    if data and data.get("matchId") is not None:
+        return str(data.get("matchId"))
+    query_match_id = request.args.get("matchId")
+    if query_match_id:
+        return str(query_match_id)
+    return DEFAULT_SESSION_ID
+
+
+def get_session(match_id, create_if_missing=False):
+    global last_session_cleanup_ts
+
+    now = time.time()
+    with session_lock:
+        if now - last_session_cleanup_ts >= SESSION_CLEANUP_INTERVAL_SECONDS:
+            cleanup_expired_sessions(now)
+            last_session_cleanup_ts = now
+
+        session = game_sessions.get(match_id)
+        if not session and create_if_missing:
+            session = create_session()
+            game_sessions[match_id] = session
+        if session:
+            session["last_accessed"] = now
+        return session
+
+
+def cleanup_expired_sessions(now=None):
+    if now is None:
+        now = time.time()
+
+    stale_match_ids = []
+    for match_id, session in game_sessions.items():
+        if match_id == DEFAULT_SESSION_ID:
+            continue
+        last_accessed = session.get("last_accessed", session.get("created_at", now))
+        if now - last_accessed > SESSION_TTL_SECONDS:
+            stale_match_ids.append(match_id)
+
+    for match_id in stale_match_ids:
+        game_sessions.pop(match_id, None)
+
+    if stale_match_ids:
+        print(f"🧹 Cleaned {len(stale_match_ids)} expired game session(s): {stale_match_ids}")
+
+    return stale_match_ids
+
+
+def resolve_player_color_for_session(session, player_id=None):
+    if player_id and player_id in session["player_colors"]:
+        return session["player_colors"][player_id]
+    return session["default_player_color"]
 
 # Training state
 training_state = {
@@ -67,16 +140,30 @@ def friendly_strategy(name):
 @app.route('/api/game/set_player_color', methods=['POST'])
 def set_player_color():
     """Set which color the player is playing as"""
-    global player_color
-    data = request.get_json()
+    data = request.get_json(silent=True) or {}
     color = data.get('color', 'white')
+    player_id = data.get('playerId')
+    match_id = resolve_match_id(data)
     player_color = chess.WHITE if color == 'white' else chess.BLACK
-    print(f"🎮 Player color set to: {color.upper()}")
-    return jsonify({'message': f'Player is now playing as {color.upper()}'})
+
+    session = get_session(match_id, create_if_missing=True)
+    session['default_player_color'] = player_color
+    if player_id:
+        session['player_colors'][str(player_id)] = player_color
+
+    print(f"🎮 Player color set to: {color.upper()} (matchId={match_id}, playerId={player_id})")
+    return jsonify({'message': f'Player is now playing as {color.upper()}', 'matchId': match_id})
 
 @app.route('/api/game/get_board', methods=['GET'])
 def get_board():
+    match_id = resolve_match_id()
+    session = get_session(match_id, create_if_missing=(match_id == DEFAULT_SESSION_ID))
+    if session is None:
+        return jsonify({'error': 'Match session not found', 'matchId': match_id}), 404
+
+    game = session['game']
     return jsonify({
+        'matchId': match_id,
         'board': game.get_board_fen(),
         'turn': 'white' if game.board.turn == chess.WHITE else 'black',
         'is_check': game.board.is_check(),
@@ -90,15 +177,30 @@ def make_move():
     print("\n==============================")
     print("🔵 [API] POST /make_move")
 
-    data = request.get_json()
+    data = request.get_json(silent=True) or {}
     move = data.get('move')
+    player_id = data.get('playerId')
+    match_id = resolve_match_id(data)
+    session = get_session(match_id, create_if_missing=(match_id == DEFAULT_SESSION_ID))
+
+    if session is None:
+        return jsonify({'error': 'Match session not found', 'matchId': match_id}), 404
+
+    game = session['game']
+    player_color = resolve_player_color_for_session(session, str(player_id) if player_id else None)
+
+    if session['game_type'] == 'pvp' and not player_id:
+        return jsonify({'error': 'playerId is required for PvP moves', 'matchId': match_id}), 400
+
+    if session['game_type'] == 'pvp' and player_id and str(player_id) not in session['player_colors']:
+        return jsonify({'error': 'Player is not registered for this match', 'matchId': match_id}), 403
 
     # Validate move format
     if not move or len(move) < 4:
         print("❌ No move provided or invalid format.")
         return jsonify({'error': 'No move provided'}), 400
 
-    # Check if it's player's turn
+    # Check if it's player's turn for this session/player
     if game.board.turn != player_color:
         print(f"❌ Not player's turn! Current turn: {'WHITE' if game.board.turn == chess.WHITE else 'BLACK'}")
         return jsonify({
@@ -124,7 +226,21 @@ def make_move():
             print("==============================")
             return jsonify({'error': move_info if isinstance(move_info, str) else 'Invalid move', 'board': game.get_board_fen()}), 400
 
-        # After player move, check if AI should move
+        # PvP mode does not auto-play an AI move.
+        if session['game_type'] == 'pvp':
+            print("==============================")
+            return jsonify({
+                'matchId': match_id,
+                'board': game.get_board_fen(),
+                'result': 'Move successful',
+                'turn': 'white' if game.board.turn == chess.WHITE else 'black',
+                'is_check': game.board.is_check(),
+                'is_checkmate': game.board.is_checkmate(),
+                'is_stalemate': game.board.is_stalemate(),
+                'is_insufficient_material': game.board.is_insufficient_material()
+            })
+
+        # After player move in AI mode, check if AI should move
         if not game.is_game_over():
             # Determine which AI should move
             ai_color = chess.BLACK if player_color == chess.WHITE else chess.WHITE
@@ -140,6 +256,7 @@ def make_move():
 
             print("==============================")
             return jsonify({
+                'matchId': match_id,
                 'board': game.get_board_fen(),
                 'result': 'Move successful',
                 'ai_move': ai_move,
@@ -153,6 +270,7 @@ def make_move():
             print("🏁 Game is over!")
             print("==============================")
             return jsonify({
+                'matchId': match_id,
                 'board': game.get_board_fen(),
                 'result': 'Game over',
                 'turn': 'white' if game.board.turn == chess.WHITE else 'black',
@@ -164,13 +282,21 @@ def make_move():
     except Exception as e:
         print(f"🔥 Exception occurred: {e}")
         print("==============================")
-        return jsonify({'error': str(e), 'board': game.get_board_fen()}), 500
+        return jsonify({'error': str(e), 'board': game.get_board_fen(), 'matchId': match_id}), 500
 
 @app.route('/api/game/reset', methods=['POST'])
 def reset():
+    data = request.get_json(silent=True) or {}
+    match_id = resolve_match_id(data)
+    session = get_session(match_id, create_if_missing=(match_id == DEFAULT_SESSION_ID))
+    if session is None:
+        return jsonify({'error': 'Match session not found', 'matchId': match_id}), 404
+
+    game = session['game']
     game.reset()
     return jsonify({
         'message': 'Board reset',
+        'matchId': match_id,
         'board': game.get_board_fen(),
         'turn': 'white' if game.board.turn == chess.WHITE else 'black',
         'is_check': game.board.is_check(),
@@ -182,11 +308,12 @@ def reset():
 @app.route('/api/game/start_new_game', methods=['POST'])
 def start_new_game():
     """Start a new game with specified settings."""
-    global player_color, game
-    data = request.get_json()
+    data = request.get_json(silent=True) or {}
     game_type = data.get('gameType', 'ai')
     color = data.get('playerColor', 'white')
     ai_strategy = data.get('aiStrategy', 'model')  # "model" = Danibot, "stockfish" = Stockfish
+    player_id = data.get('playerId')
+    match_id = resolve_match_id(data)
 
     # Validate player color from request
     if color not in ['white', 'black']:
@@ -198,21 +325,34 @@ def start_new_game():
 
     # Set player color dynamically based on request
     player_color = chess.WHITE if color == 'white' else chess.BLACK
-    print(f"🎮 Starting new game. Player color: {color.upper()}, Game type: {game_type.upper()}, AI: {ai_strategy}")
+    print(f"🎮 Starting new game. Player color: {color.upper()}, Game type: {game_type.upper()}, AI: {ai_strategy}, matchId={match_id}")
 
-    # Reset the game — AI uses the selected strategy
-    ai_white = ChessAI(is_white=True, default_strategy=ai_strategy) if game_type == 'ai' and player_color == chess.BLACK else None
-    ai_black = ChessAI(is_white=False, default_strategy=ai_strategy) if game_type == 'ai' and player_color == chess.WHITE else None
-    game = Game(ai_white, ai_black)
+    with session_lock:
+        now = time.time()
+        existing = game_sessions.get(match_id)
+        if game_type == 'pvp' and existing and existing.get('game_type') == 'pvp':
+            session = existing
+        else:
+            session = create_session(game_type=game_type, player_color=player_color, ai_strategy=ai_strategy)
+            game_sessions[match_id] = session
+
+        session['game_type'] = game_type
+        session['default_player_color'] = player_color
+        session['last_accessed'] = now
+        if player_id:
+            session['player_colors'][str(player_id)] = player_color
+
+    game = session['game']
 
     # If player is black, AI (white) needs to make the first move
     ai_first_move = None
-    if player_color == chess.BLACK and ai_white is not None:
+    if game_type == 'ai' and player_color == chess.BLACK and game.ai_white is not None:
         ai_first_move = game.ai_move(chess.WHITE)
         print(f"🤖 AI (White) made first move: {ai_first_move}")
 
     return jsonify({
         'message': 'New game started',
+        'matchId': match_id,
         'playerColor': color,
         'gameType': game_type,
         'board': game.get_board_fen(),
@@ -464,7 +604,7 @@ def run_mirror_match_training(epochs, max_moves, white_strategy, black_strategy,
             process.wait()
 
         # Check if script saved the model
-        if os.path.exists("chessnet.pth"):
+        if os.path.exists("danibot.pth"):
             training_state["current_status"] = "✅ Mirror Match training completed! Model saved."
             print("💾 Model saved successfully")
         else:
@@ -573,7 +713,7 @@ def run_stockfish_training(epochs):
             process.kill()
             process.wait()
 
-        if os.path.exists("chessnet.pth"):
+        if os.path.exists("danibot.pth"):
             training_state["current_status"] = "✅ Stockfish training completed! Model saved."
         else:
             training_state["current_status"] = "✅ Stockfish training completed"
@@ -686,7 +826,7 @@ def run_archive_alpha_training(epochs):
             process.kill()
             process.wait()
 
-        if os.path.exists("chessnet.pth"):
+        if os.path.exists("danibot.pth"):
             training_state["current_status"] = "✅ Archive Alpha training completed! Model saved."
         else:
             training_state["current_status"] = "✅ Archive Alpha training completed"

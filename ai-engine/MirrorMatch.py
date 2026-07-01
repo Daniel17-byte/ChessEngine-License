@@ -364,11 +364,11 @@ def main():
         print_status(epoch + 1, args.epochs, avg_loss, winner, all_stats)
 
         if (epoch + 1) % 10 == 0:
-            torch.save(ai_white.model.state_dict(), "chessnet.pth")
+            torch.save(ai_white.model.state_dict(), "danibot.pth")
             print(json.dumps({"status": "model_saved", "epoch": epoch + 1}))
             sys.stdout.flush()
 
-    torch.save(ai_white.model.state_dict(), "chessnet.pth")
+    torch.save(ai_white.model.state_dict(), "danibot.pth")
     duration_seconds = time.perf_counter() - training_start_perf
     total_games_played = sum(all_stats.values())
     games_per_second = total_games_played / max(duration_seconds, 1e-9)

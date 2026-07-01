@@ -58,12 +58,16 @@ public class MatchmakingQueueService {
         QueueEntry entry = new QueueEntry(playerId, playerName, rating);
 
         // Publish to RabbitMQ
-        rabbitTemplate.convertAndSend(
-                RabbitMQConfig.EXCHANGE_NAME,
-                RabbitMQConfig.ROUTING_KEY,
-                entry
-        );
-        log.info("Published queue entry for player {} to RabbitMQ", playerId);
+        try {
+            rabbitTemplate.convertAndSend(
+                    RabbitMQConfig.EXCHANGE_NAME,
+                    RabbitMQConfig.ROUTING_KEY,
+                    entry
+            );
+            log.info("Published queue entry for player {} to RabbitMQ", playerId);
+        } catch (Exception ex) {
+            log.warn("RabbitMQ unavailable while publishing queue entry for player {}. Continuing with in-memory matchmaking.", playerId, ex);
+        }
 
         // Add to in-memory queue
         waitingQueue.add(entry);
@@ -154,11 +158,15 @@ public class MatchmakingQueueService {
                     playerTwo.getPlayerId(), playerTwo.getPlayerName()
             );
 
-            rabbitTemplate.convertAndSend(
-                    RabbitMQConfig.EXCHANGE_NAME,
-                    RabbitMQConfig.MATCH_FOUND_ROUTING_KEY,
-                    event
-            );
+            try {
+                rabbitTemplate.convertAndSend(
+                        RabbitMQConfig.EXCHANGE_NAME,
+                        RabbitMQConfig.MATCH_FOUND_ROUTING_KEY,
+                        event
+                );
+            } catch (Exception ex) {
+                log.warn("RabbitMQ unavailable while publishing match-found event for matchId={}. Continuing.", match.getId(), ex);
+            }
 
             log.info("Match found! {} vs {} → matchId={}",
                     playerOne.getPlayerName(), playerTwo.getPlayerName(), match.getId());

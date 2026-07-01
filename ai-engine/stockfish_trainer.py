@@ -105,7 +105,7 @@ if __name__ == '__main__':
     epochs = args.epochs
     lr = args.lr
     engine_path = "/opt/homebrew/bin/stockfish"
-    model_path = "chessnet.pth"
+    model_path = "danibot.pth"
     labels_path = "stockfish_labels.json"
 
     # ===== Choose dataset: pre-computed (fast) or live (slow) =====

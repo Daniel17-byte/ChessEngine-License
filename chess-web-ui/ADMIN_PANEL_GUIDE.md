@@ -197,7 +197,7 @@ Click **"⏹️ Stop Training"** to:
 - Reduce number of epochs
 
 ### Model Not Loading
-- Ensure `chessnet.pth` exists in ai-engine folder
+- Ensure `danibot.pth` exists in ai-engine folder
 - Check Flask app is running properly
 
 ---
@@ -238,7 +238,7 @@ Expected: Loss should drop from ~3.0 to ~0.1
    - Compare final loss values
 
 3. **Backup Your Model**
-   - Copy `chessnet.pth` to safe location
+   - Copy `danibot.pth` to safe location
    - Track training results over time
 
 4. **Iterate**

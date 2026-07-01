@@ -1,8 +1,9 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { useChess, GameType, PlayerColor, AiOpponent } from "../context/ChessContext";
 import { startNewGame } from "../api/chessApi";
+import { getMatchById, getQueueStatus, joinQueue, leaveQueue, QueueStatusResponse } from "../api/matchmakingApi";
 import styles from "./NewGameDialog.module.css";
 
 interface NewGameDialogProps {
@@ -16,12 +17,130 @@ const NewGameDialog: React.FC<NewGameDialogProps> = ({ isOpen, onClose }) => {
     const [selectedColor, setSelectedColor] = useState<PlayerColor>(PlayerColor.WHITE);
     const [selectedOpponent, setSelectedOpponent] = useState<AiOpponent>(AiOpponent.DANIBOT);
     const [isLoading, setIsLoading] = useState(false);
+    const [queueStatus, setQueueStatus] = useState<QueueStatusResponse | null>(null);
+    const [queueError, setQueueError] = useState<string | null>(null);
+    const queuePollRef = useRef<number | null>(null);
 
     const backendPlayerColor = selectedColor === PlayerColor.WHITE ? "white" : "black";
 
+    const stopQueuePolling = () => {
+        if (queuePollRef.current !== null) {
+            window.clearInterval(queuePollRef.current);
+            queuePollRef.current = null;
+        }
+    };
+
+    const getPlayerIdentity = (): { playerId: string; playerName: string } => {
+        try {
+            const storedUser = sessionStorage.getItem("user");
+            if (storedUser) {
+                const user = JSON.parse(storedUser);
+                const playerId = String(user.uuid || user.username || "").trim();
+                const playerName = String(user.username || playerId || "Player").trim();
+                if (playerId) {
+                    return { playerId, playerName };
+                }
+            }
+        } catch {
+            // no-op
+        }
+
+        const guestStorageKey = "guest_matchmaking_player_id";
+        const existingGuestId = localStorage.getItem(guestStorageKey);
+        const guestId = existingGuestId || `guest-${crypto.randomUUID()}`;
+        if (!existingGuestId) {
+            localStorage.setItem(guestStorageKey, guestId);
+        }
+
+        return { playerId: guestId, playerName: guestId };
+    };
+
+    const handleMatchedGameStart = async (matchId: number) => {
+        const { playerId } = getPlayerIdentity();
+        const match = await getMatchById(matchId);
+        if (!match) {
+            setQueueError("Am gasit meciul, dar nu am putut citi detaliile lui.");
+            return;
+        }
+
+        const isPlayerOne = match.playerOneId === playerId;
+        const assignedColor = isPlayerOne ? PlayerColor.WHITE : PlayerColor.BLACK;
+        const opponent = isPlayerOne ? match.playerTwoId || null : match.playerOneId || null;
+
+        const responseData = await startNewGame(GameType.PVP, assignedColor, selectedOpponent, {
+            matchId,
+            playerId,
+        });
+        if (!responseData.success) {
+            setQueueError("Nu am putut porni jocul PvP pe backend.");
+            return;
+        }
+        if (responseData.board) {
+            setFen(responseData.board);
+        }
+
+        setGameSettings(GameType.PVP, assignedColor, selectedOpponent, { matchId, opponentId: opponent });
+        setLastAiMove(null);
+        setQueueStatus(null);
+        setQueueError(null);
+        onClose();
+    };
+
+    const handleLeaveQueue = async () => {
+        const { playerId } = getPlayerIdentity();
+        stopQueuePolling();
+        await leaveQueue(playerId);
+        setQueueStatus(null);
+        setQueueError(null);
+        setIsLoading(false);
+    };
+
     const handleStartGame = async () => {
         setIsLoading(true);
+        setQueueError(null);
         try {
+            if (selectedGameType === GameType.PVP) {
+                const identity = getPlayerIdentity();
+                const queueResponse = await joinQueue({
+                    playerId: identity.playerId,
+                    playerName: identity.playerName,
+                    rating: 1200,
+                });
+
+                if (!queueResponse) {
+                    setQueueError("Nu m-am putut conecta la matchmaking.");
+                    return;
+                }
+
+                setQueueStatus(queueResponse);
+
+                if (queueResponse.status === "MATCHED" && queueResponse.matchId) {
+                    await handleMatchedGameStart(queueResponse.matchId);
+                    return;
+                }
+
+                if (queueResponse.status !== "QUEUED") {
+                    setQueueError("Status necunoscut in matchmaking.");
+                    return;
+                }
+
+                stopQueuePolling();
+                queuePollRef.current = window.setInterval(async () => {
+                    const status = await getQueueStatus(identity.playerId);
+                    if (!status) return;
+
+                    setQueueStatus(status);
+                    if (status.status === "MATCHED" && status.matchId) {
+                        stopQueuePolling();
+                        setIsLoading(true);
+                        await handleMatchedGameStart(status.matchId);
+                        setIsLoading(false);
+                    }
+                }, 1500);
+
+                return;
+            }
+
             const responseData = await startNewGame(
                 selectedGameType,
                 backendPlayerColor,
@@ -42,13 +161,32 @@ const NewGameDialog: React.FC<NewGameDialogProps> = ({ isOpen, onClose }) => {
                 setLastAiMove(responseData.ai_move);
             }
 
+            setQueueStatus(null);
+            setQueueError(null);
+
             onClose();
         } catch (error) {
             console.error("Error starting game:", error);
+            setQueueError("A aparut o eroare la pornirea jocului.");
         } finally {
             setIsLoading(false);
         }
     };
+
+    useEffect(() => {
+        if (!isOpen && queueStatus?.status === "QUEUED") {
+            void handleLeaveQueue();
+        }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [isOpen]);
+
+    useEffect(() => {
+        return () => {
+            stopQueuePolling();
+        };
+    }, []);
+
+    const waitingInQueue = queueStatus?.status === "QUEUED";
 
     if (!isOpen) return null;
 
@@ -90,9 +228,9 @@ const NewGameDialog: React.FC<NewGameDialogProps> = ({ isOpen, onClose }) => {
                         <button
                             className={`${styles.opponentBtn} ${selectedGameType === GameType.PVP ? styles.selected : ""}`}
                             onClick={() => setSelectedGameType(GameType.PVP)}
-                            disabled={isLoading}
+                            disabled={isLoading || waitingInQueue}
                         >
-                            👥 Play vs Player (Coming Soon)
+                            👥 Play vs Player (Matchmaking)
                         </button>
                     </div>
                 </div>
@@ -128,18 +266,37 @@ const NewGameDialog: React.FC<NewGameDialogProps> = ({ isOpen, onClose }) => {
                     <button
                         className={styles.startBtn}
                         onClick={handleStartGame}
-                        disabled={isLoading}
+                        disabled={isLoading || waitingInQueue}
                     >
-                        {isLoading ? "⏳ Starting..." : "▶️ Start Game"}
+                        {isLoading ? "⏳ Starting..." : waitingInQueue ? "🔎 Searching opponent..." : "▶️ Start Game"}
                     </button>
                     <button
                         className={styles.cancelBtn}
-                        onClick={onClose}
-                        disabled={isLoading}
+                        onClick={() => {
+                            if (waitingInQueue) {
+                                void handleLeaveQueue();
+                            }
+                            onClose();
+                        }}
+                        disabled={isLoading && !waitingInQueue}
                     >
-                        ✕ Cancel
+                        {waitingInQueue ? "✕ Leave Queue" : "✕ Cancel"}
                     </button>
                 </div>
+
+                {(queueStatus || queueError) && (
+                    <div className={styles.queueInfo}>
+                        {queueError && <p className={styles.queueError}>{queueError}</p>}
+                        {!queueError && queueStatus?.status === "QUEUED" && (
+                            <p>
+                                In cautare... pozitia ta: <strong>{queueStatus.queuePosition}</strong> / {queueStatus.queueSize}
+                            </p>
+                        )}
+                        {!queueError && queueStatus?.status === "MATCHED" && queueStatus.matchId && (
+                            <p>Meci gasit! Match #{queueStatus.matchId}</p>
+                        )}
+                    </div>
+                )}
             </div>
         </div>
     );

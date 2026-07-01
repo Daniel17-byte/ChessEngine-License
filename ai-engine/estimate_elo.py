@@ -162,7 +162,7 @@ def estimate_elo_from_results(results):
 def main():
     parser = argparse.ArgumentParser(description='Estimate Danibot ELO rating')
     parser.add_argument('--games', type=int, default=10, help='Games per skill level')
-    parser.add_argument('--max-moves', type=int, default=80, help='Max moves per game')
+    parser.add_argument('--max-moves', type=int, default=200, help='Max moves per game')
     parser.add_argument('--min-level', type=int, default=0, help='Minimum Stockfish skill level to test')
     parser.add_argument('--max-level', type=int, default=10, help='Maximum Stockfish skill level to test')
     parser.add_argument('--verbose', action='store_true', help='Print individual game results')

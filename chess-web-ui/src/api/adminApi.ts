@@ -1,7 +1,8 @@
 import { io, Socket } from "socket.io-client";
 
-const API_HOST = process.env.NEXT_PUBLIC_API_HOST || "http://localhost:5050";
-const ADMIN_API_BASE = `${API_HOST}/api/admin`;
+const ADMIN_API_HOST = process.env.NEXT_PUBLIC_ADMIN_API_HOST || "http://localhost:8080";
+const SOCKET_HOST = process.env.NEXT_PUBLIC_ADMIN_SOCKET_HOST || "http://localhost:5050";
+const ADMIN_API_BASE = `${ADMIN_API_HOST}/api/admin`;
 
 export interface TrainingStatus {
     is_training: boolean;
@@ -35,7 +36,7 @@ export function connectTrainingSocket(
         socket.disconnect();
     }
 
-    socket = io(API_HOST, {
+    socket = io(SOCKET_HOST, {
         transports: ["websocket", "polling"],
         reconnection: true,
         reconnectionDelay: 1000,
@@ -200,7 +201,7 @@ export const getEloStatus = async (): Promise<EloStatus | null> => {
 export function connectEloSocket(onStatus: (status: EloStatus) => void): () => void {
     // Reuse the existing socket or create one
     if (!socket) {
-        socket = io(API_HOST, {
+        socket = io(SOCKET_HOST, {
             transports: ["websocket", "polling"],
             reconnection: true,
             reconnectionDelay: 1000,

@@ -1,4 +1,4 @@
-const API_BASE = process.env.NEXT_PUBLIC_STATS_API_BASE || "http://localhost:8082/api/stats";
+const API_BASE = process.env.NEXT_PUBLIC_STATS_API_BASE || "http://localhost:8080/api/stats";
 
 export interface GameStat {
     userId: string;

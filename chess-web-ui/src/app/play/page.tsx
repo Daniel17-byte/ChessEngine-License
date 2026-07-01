@@ -22,7 +22,7 @@ export default function PlayPage() {
 }
 
 function PlayContent() {
-    const { toggleBoardFlip, gameType, playerColor, aiOpponent, isGameOver, gameStarted, isCheck } = useChess();
+    const { toggleBoardFlip, gameType, playerColor, aiOpponent, isGameOver, gameStarted, isCheck, pvpMatchId, opponentId } = useChess();
     const [showNewGameDialog, setShowNewGameDialog] = useState(false);
 
     const handleBoardClick = () => {
@@ -70,7 +70,11 @@ function PlayContent() {
                         padding: "6px 14px",
                         borderRadius: 6,
                     }}>
-                        <span>{gameType === "ai" ? (aiOpponent === "model" ? "🧠 vs Danibot" : "♞ vs Stockfish") : "👥 vs Player"}</span>
+                        <span>
+                            {gameType === "ai"
+                                ? (aiOpponent === "model" ? "🧠 vs Danibot" : "♞ vs Stockfish")
+                                : `👥 ${opponentId ? `vs ${opponentId}` : "vs Player"}${pvpMatchId ? ` (#${pvpMatchId})` : ""}`}
+                        </span>
                         <span>•</span>
                         <span>{playerColor === "white" ? "⚪ White" : "⚫ Black"}</span>
                         {isCheck && <span style={{ color: "#d32f2f", fontWeight: 700 }}>• ⚠️ Check!</span>}

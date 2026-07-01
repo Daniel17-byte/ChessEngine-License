@@ -1,13 +1,31 @@
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "http://localhost:5050/api/game";
+const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "http://localhost:8080/api/game";
 
-export const setPlayerColor = async (color: "white" | "black"): Promise<boolean> => {
+export interface GameRequestContext {
+    matchId?: number | string | null;
+    playerId?: string | null;
+}
+
+const withMatchIdQuery = (path: string, context?: GameRequestContext): string => {
+    if (!context?.matchId) {
+        return `${API_BASE}/${path}`;
+    }
+
+    const matchId = encodeURIComponent(String(context.matchId));
+    return `${API_BASE}/${path}?matchId=${matchId}`;
+};
+
+export const setPlayerColor = async (color: "white" | "black", context?: GameRequestContext): Promise<boolean> => {
     try {
         const res = await fetch(`${API_BASE}/set_player_color`, {
             method: "POST",
             headers: {
                 "Content-Type": "application/json",
             },
-            body: JSON.stringify({ color }),
+            body: JSON.stringify({
+                color,
+                matchId: context?.matchId,
+                playerId: context?.playerId,
+            }),
         });
         return res.ok;
     } catch {
@@ -15,7 +33,7 @@ export const setPlayerColor = async (color: "white" | "black"): Promise<boolean>
     }
 };
 
-export const getBoard = async (): Promise<{
+export const getBoard = async (context?: GameRequestContext): Promise<{
     board: string;
     turn: "white" | "black";
     is_check: boolean;
@@ -24,7 +42,7 @@ export const getBoard = async (): Promise<{
     is_insufficient_material: boolean;
 } | null> => {
     try {
-        const res = await fetch(`${API_BASE}/get_board`);
+        const res = await fetch(withMatchIdQuery("get_board", context));
         if (!res.ok) return null;
         return await res.json();
     } catch {
@@ -33,7 +51,8 @@ export const getBoard = async (): Promise<{
 };
 
 export const makeMove = async (
-    move: string
+    move: string,
+    context?: GameRequestContext
 ): Promise<{
     board?: string;
     ai_move?: string;
@@ -50,7 +69,11 @@ export const makeMove = async (
             headers: {
                 "Content-Type": "application/json",
             },
-            body: JSON.stringify({ move: move }),
+            body: JSON.stringify({
+                move,
+                matchId: context?.matchId,
+                playerId: context?.playerId,
+            }),
         });
 
         const data = await res.json();
@@ -67,10 +90,14 @@ export const makeMove = async (
     }
 };
 
-export const resetBoard = async (): Promise<string | null> => {
+export const resetBoard = async (context?: GameRequestContext): Promise<string | null> => {
     try {
         const res = await fetch(`${API_BASE}/reset`, {
             method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+            },
+            body: JSON.stringify({ matchId: context?.matchId }),
         });
         if (!res.ok) return null;
         const data = await res.json();
@@ -83,7 +110,8 @@ export const resetBoard = async (): Promise<string | null> => {
 export const startNewGame = async (
     gameType: "ai" | "pvp",
     playerColor: "white" | "black",
-    aiStrategy: string = "model"
+    aiStrategy: string = "model",
+    context?: GameRequestContext
 ): Promise<{
     success: boolean;
     board?: string;
@@ -96,7 +124,13 @@ export const startNewGame = async (
             headers: {
                 "Content-Type": "application/json",
             },
-            body: JSON.stringify({ gameType, playerColor, aiStrategy }),
+            body: JSON.stringify({
+                gameType,
+                playerColor,
+                aiStrategy,
+                matchId: context?.matchId,
+                playerId: context?.playerId,
+            }),
         });
         if (!res.ok) return { success: false };
         const data = await res.json();

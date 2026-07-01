@@ -18,6 +18,7 @@ except ImportError:
 
 from ArchiveAlpha import encode_board_array
 from ChessNet import ChessNet
+from mcts import MCTS
 
 def _fast_encode(board):
     """Use Cython encoding if available, else fallback."""
@@ -72,7 +73,7 @@ class ChessAI:
 
         self.model = ChessNet(len(move_list))
         self.model.to(self.device)
-        model_path = "chessnet.pth"
+        model_path = "danibot.pth"
         if load_model_from_disk and os.path.exists(model_path):
             try:
                 state_dict = torch.load(model_path, map_location=self.device)
@@ -114,6 +115,15 @@ class ChessAI:
         self.epsilon = 0.05
         self.default_strategy = default_strategy
 
+        # Initialize MCTS engine for search-based play
+        self.mcts = MCTS(
+            model=self.model,
+            device=self.device,
+            move_to_idx=self.move_to_idx,
+            idx_to_move=self.idx_to_move,
+            encode_fn=_fast_encode,
+        )
+
     def move_to_index(self, move_uci: str) -> int:
         return self.move_to_idx.get(move_uci, -1)
 
@@ -126,6 +136,8 @@ class ChessAI:
             return random.choice(list(self.board.legal_moves))
         elif strategy == 'model':
             return self.get_best_move_from_model(board)
+        elif strategy == 'mcts':
+            return self.mcts.search(board, simulations=200)
         elif strategy == 'minimax':
             return self.select_move_minimax(board)
         elif strategy == 'stockfish':
@@ -155,9 +167,35 @@ class ChessAI:
         board_array = _fast_encode(board)
         board_tensor = torch.from_numpy(board_array).unsqueeze(0).to(self.device, non_blocking=(self.device.type == 'cuda'))
         with torch.inference_mode():
-            pred = self.model(board_tensor).squeeze(0)
+            output = self.model(board_tensor)
+            # Support both (policy, value) and policy-only models
+            if isinstance(output, tuple):
+                pred = output[0].squeeze(0)
+            else:
+                pred = output.squeeze(0)
         cache[cache_key] = pred
         return pred
+
+    def _predict_policy_and_value(self, board: chess.Board, cache: dict):
+        """Predict policy + value. Returns (policy_tensor, value_float)."""
+        cache_key = ('pv', self._board_cache_key(board))
+        cached = cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        board_array = _fast_encode(board)
+        board_tensor = torch.from_numpy(board_array).unsqueeze(0).to(self.device, non_blocking=(self.device.type == 'cuda'))
+        with torch.inference_mode():
+            output = self.model(board_tensor)
+            if isinstance(output, tuple):
+                policy = output[0].squeeze(0)
+                value = output[1].item()
+            else:
+                policy = output.squeeze(0)
+                value = 0.0
+        result = (policy, value)
+        cache[cache_key] = result
+        return result
 
     def _predict_policy_cpu(self, board: chess.Board, cache: dict, cpu_model) -> np.ndarray:
         """Ultra-fast policy prediction on CPU returning numpy array.
@@ -177,8 +215,12 @@ class ChessAI:
         buf_np = buf.numpy()
         buf_np[0] = board_array  # direct memory copy, no tensor creation
         with torch.inference_mode():
-            pred_tensor = cpu_model(buf)
-        pred = pred_tensor.squeeze(0).numpy()
+            pred_output = cpu_model(buf)
+        # Support both (policy, value) and policy-only
+        if isinstance(pred_output, tuple):
+            pred = pred_output[0].squeeze(0).numpy()
+        else:
+            pred = pred_output.squeeze(0).numpy()
         cache[cache_key] = pred
         return pred
 
@@ -218,7 +260,7 @@ class ChessAI:
     def _top_legal_model_moves(self, board: chess.Board, prediction: torch.Tensor, top_n: int):
         return self._get_legal_and_top_model_moves(board, prediction, top_n, cache={})
 
-    def get_best_move_from_model(self, board: chess.Board, top_n: int = 5, depth: int = 2) -> Optional[chess.Move]:
+    def get_best_move_from_model(self, board: chess.Board, top_n: int = 1, depth: int = 1) -> Optional[chess.Move]:
         self.board = board
 
         prediction_cache = {}
@@ -232,6 +274,11 @@ class ChessAI:
         if not top_moves:
             return random.choice(legal_moves)
 
+        def nn_eval(b):
+            """Use neural network value head for position evaluation."""
+            _, val = self._predict_policy_and_value(b, prediction_cache)
+            return val
+
         def model_minimax(board_, depth_, alpha, beta, maximizing):
             key = (self._board_cache_key(board_), depth_, maximizing)
             cached_eval = eval_cache.get(key)
@@ -239,14 +286,14 @@ class ChessAI:
                 return cached_eval
 
             if depth_ == 0 or board_.is_game_over():
-                result = (self.evaluate_board(board_), None)
+                result = (nn_eval(board_), None)
                 eval_cache[key] = result
                 return result
 
             pred_ = self._predict_policy(board_, prediction_cache)
             moves_, top_moves_ = self._get_legal_and_top_model_moves(board_, pred_, top_n, move_cache)
             if not moves_:
-                result = (self.evaluate_board(board_), None)
+                result = (nn_eval(board_), None)
                 eval_cache[key] = result
                 return result
             if not top_moves_:

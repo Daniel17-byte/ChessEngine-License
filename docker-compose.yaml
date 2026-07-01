@@ -31,9 +31,12 @@ services:
       dockerfile: Dockerfile
     container_name: users-be
     environment:
+      SERVER_PORT: 8081
       SPRING_DATASOURCE_URL: jdbc:mysql://db_users:3306/users
       SPRING_DATASOURCE_USERNAME: ${SPRING_DATASOURCE_USERNAME}
       SPRING_DATASOURCE_PASSWORD: ${SPRING_DATASOURCE_PASSWORD}
+    ports:
+      - "8081:8081"
     depends_on:
       - db_users
     volumes:
@@ -47,10 +50,13 @@ services:
       dockerfile: Dockerfile
     container_name: game-be
     environment:
+      SERVER_PORT: 8084
       SPRING_DATASOURCE_URL: jdbc:mysql://db_game:3306/game
       SPRING_DATASOURCE_USERNAME: ${SPRING_DATASOURCE_USERNAME}
       SPRING_DATASOURCE_PASSWORD: ${SPRING_DATASOURCE_PASSWORD}
       SPRING_RABBITMQ_HOST: rabbitmq
+    ports:
+      - "8084:8084"
     depends_on:
       - db_game
       - ai-engine
@@ -129,6 +135,11 @@ services:
       - game-be
       - stats-be
     environment:
+      USERS_SERVICE_BASE_URL: http://users-be:8081
+      STATS_SERVICE_BASE_URL: http://stats-be:8082
+      MATCHMAKING_SERVICE_BASE_URL: http://matchmaking-be:8083
+      PAYMENT_SERVICE_BASE_URL: http://payment-be:8085
+      AI_ENGINE_SERVICE_BASE_URL: http://ai-engine:5000
       SPRING_RABBITMQ_HOST: rabbitmq
     volumes:
       - maven_cache:/root/.m2

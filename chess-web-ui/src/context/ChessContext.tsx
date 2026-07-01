@@ -1,7 +1,7 @@
 "use client";
 
-import React, { createContext, useContext, useState, useCallback } from "react";
-import { makeMove, resetBoard } from "../api/chessApi";
+import React, { createContext, useContext, useState, useCallback, useEffect } from "react";
+import { getBoard, makeMove, resetBoard, setPlayerColor as setBackendPlayerColor } from "../api/chessApi";
 import { recordWin, recordLoss, recordDraw } from "../api/statsApi";
 
 export enum GameType {
@@ -37,7 +37,14 @@ interface ChessContextType {
     gameType: GameType;
     playerColor: PlayerColor;
     aiOpponent: AiOpponent;
-    setGameSettings: (gameType: GameType, playerColor: PlayerColor, aiOpponent?: AiOpponent) => void;
+    pvpMatchId: number | null;
+    opponentId: string | null;
+    setGameSettings: (
+        gameType: GameType,
+        playerColor: PlayerColor,
+        aiOpponent?: AiOpponent,
+        multiplayerOptions?: { matchId?: number; opponentId?: string | null }
+    ) => void;
     moveCount: number;
     gameStarted: boolean;
     setGameStarted: (started: boolean) => void;
@@ -58,6 +65,8 @@ export const ChessProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     const [gameType, setGameType] = useState<GameType>(GameType.AI);
     const [playerColor, setPlayerColor] = useState<PlayerColor>(PlayerColor.WHITE);
     const [aiOpponent, setAiOpponent] = useState<AiOpponent>(AiOpponent.DANIBOT);
+    const [pvpMatchId, setPvpMatchId] = useState<number | null>(null);
+    const [opponentId, setOpponentId] = useState<string | null>(null);
     const [moveCount, setMoveCount] = useState(0);
     const [gameStarted, setGameStarted] = useState(false);
     const [isCheckmate, setIsCheckmate] = useState(false);
@@ -70,6 +79,10 @@ export const ChessProvider: React.FC<{ children: React.ReactNode }> = ({ childre
             if (stored) {
                 const user = JSON.parse(stored);
                 return user.username || user.uuid || null;
+            }
+            const guestId = localStorage.getItem("guest_matchmaking_player_id");
+            if (guestId) {
+                return guestId;
             }
         } catch { /* ignore */ }
         return null;
@@ -107,10 +120,21 @@ export const ChessProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     const makePlayerMove = async (from: string, to: string, promotion?: string): Promise<boolean> => {
         if (isLoading || !gameStarted) return false;
         const move = from + to + (promotion || "");
+        const playerId = getUserId();
 
         setIsLoading(true);
         try {
-            const data = await makeMove(move);
+            if (gameType === GameType.PVP) {
+                await setBackendPlayerColor(playerColor, {
+                    matchId: pvpMatchId,
+                    playerId,
+                });
+            }
+
+            const data = await makeMove(move, {
+                matchId: gameType === GameType.PVP ? pvpMatchId : null,
+                playerId,
+            });
 
             if (data.error) {
                 console.warn("Move rejected:", data.error);
@@ -146,7 +170,9 @@ export const ChessProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     const resetGame = async () => {
         setIsLoading(true);
         try {
-            const fenResult = await resetBoard();
+            const fenResult = await resetBoard({
+                matchId: gameType === GameType.PVP ? pvpMatchId : null,
+            });
             setFen(fenResult ?? "");
             setLastAiMove(null);
             setIsGameOver(false);
@@ -156,12 +182,50 @@ export const ChessProvider: React.FC<{ children: React.ReactNode }> = ({ childre
             setIsCheckmate(false);
             setIsStalemate(false);
             setGameStarted(false);
+            setPvpMatchId(null);
+            setOpponentId(null);
         } catch (err) {
             console.error("Reset error:", err);
         } finally {
             setIsLoading(false);
         }
     };
+
+    useEffect(() => {
+        if (gameType !== GameType.PVP || !gameStarted) {
+            return;
+        }
+
+        let stopped = false;
+
+        const syncBoard = async () => {
+            const boardState = await getBoard({ matchId: pvpMatchId });
+            if (!boardState || stopped) return;
+
+            setFen(boardState.board ?? "");
+            setIsCheck(boardState.is_check || false);
+            setIsCheckmate(boardState.is_checkmate || false);
+            setIsStalemate(boardState.is_stalemate || false);
+
+            const over = boardState.is_checkmate || boardState.is_stalemate || boardState.is_insufficient_material || false;
+            setIsGameOver(over);
+
+            if (over) {
+                const result = determineResult(boardState);
+                setGameResult(result);
+            }
+        };
+
+        void syncBoard();
+        const interval = window.setInterval(() => {
+            void syncBoard();
+        }, 1200);
+
+        return () => {
+            stopped = true;
+            window.clearInterval(interval);
+        };
+    }, [gameType, gameStarted, determineResult, pvpMatchId]);
 
     const dismissGameResult = () => {
         setGameResult(null);
@@ -171,10 +235,17 @@ export const ChessProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         setBoardFlipped(prev => !prev);
     };
 
-    const setGameSettings = (newGameType: GameType, newPlayerColor: PlayerColor, newAiOpponent?: AiOpponent) => {
+    const setGameSettings = (
+        newGameType: GameType,
+        newPlayerColor: PlayerColor,
+        newAiOpponent?: AiOpponent,
+        multiplayerOptions?: { matchId?: number; opponentId?: string | null }
+    ) => {
         setGameType(newGameType);
         setPlayerColor(newPlayerColor);
         setAiOpponent(newAiOpponent || AiOpponent.DANIBOT);
+        setPvpMatchId(multiplayerOptions?.matchId ?? null);
+        setOpponentId(multiplayerOptions?.opponentId ?? null);
         setBoardFlipped(newPlayerColor === PlayerColor.BLACK);
         setMoveCount(0);
         setLastAiMove(null);
@@ -203,6 +274,8 @@ export const ChessProvider: React.FC<{ children: React.ReactNode }> = ({ childre
             gameType,
             playerColor,
             aiOpponent,
+            pvpMatchId,
+            opponentId,
             setGameSettings,
             moveCount,
             gameStarted,

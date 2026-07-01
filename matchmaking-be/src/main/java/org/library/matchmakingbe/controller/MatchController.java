@@ -23,6 +23,11 @@ public class MatchController {
         return matchService.joinMatch(id, playerTwoId);
     }
 
+    @GetMapping("/{id}")
+    public Match getById(@PathVariable Long id) {
+        return matchService.getMatchById(id);
+    }
+
     @GetMapping
     public List<Match> all() {
         return matchService.getAllMatches();

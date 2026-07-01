@@ -196,3 +196,21 @@
     cursor: not-allowed;
 }
 
+.queueInfo {
+    margin-top: 14px;
+    padding: 10px 12px;
+    border-radius: 8px;
+    background: #f6f8fa;
+    color: #2f3b48;
+    font-size: 14px;
+}
+
+.queueInfo p {
+    margin: 0;
+}
+
+.queueError {
+    color: #c62828;
+    font-weight: 600;
+}
+

@@ -154,26 +154,42 @@ def encode_board(board):
     return torch.from_numpy(encode_board_array(board))
 
 
+def _result_to_value(result_str: str, turn_is_white: bool) -> float:
+    """Convert game result to value from perspective of side to move."""
+    if result_str == '1-0':
+        return 1.0 if turn_is_white else -1.0
+    elif result_str == '0-1':
+        return -1.0 if turn_is_white else 1.0
+    else:
+        return 0.0
+
+
 def build_chunk_tensors(games, move2idx):
     """Encode one chunk of games into contiguous tensors once, then train from them.
 
     Uses Cython batch encoding when available for ~3-5x speedup on the encoding step.
+    Returns (x_tensor, y_policy_tensor, y_value_tensor) or (None, None, None).
     """
     # Collect boards and labels first, then batch-encode
     boards = []
     y_list = []
+    v_list = []
 
     for game in games:
+        result_str = game.headers.get("Result", "*")
+        if result_str not in ("1-0", "0-1", "1/2-1/2"):
+            continue
         board = game.board()
         for move in game.mainline_moves():
             idx = move2idx.get(move.uci())
             if idx is not None:
                 boards.append(board.copy())
                 y_list.append(idx)
+                v_list.append(_result_to_value(result_str, board.turn == chess.WHITE))
             board.push(move)
 
     if not boards:
-        return None, None
+        return None, None, None
 
     # Batch encode all boards at once (Cython fast path)
     if HAS_CYTHON_BATCH:
@@ -183,7 +199,8 @@ def build_chunk_tensors(games, move2idx):
         x_np = np.stack(x_list, axis=0)
 
     y_np = np.asarray(y_list, dtype=np.int64)
-    return torch.from_numpy(x_np), torch.from_numpy(y_np)
+    v_np = np.asarray(v_list, dtype=np.float32)
+    return torch.from_numpy(x_np), torch.from_numpy(y_np), torch.from_numpy(v_np)
 
 # ── main ─────────────────────────────────────────────────────────────────────
 
@@ -194,7 +211,7 @@ def main():
     p.add_argument('--batch-size',   type=int, default=None, help='Positions per batch (auto-tuned per device when omitted)')
     p.add_argument('--chunk-size',   type=int, default=300, help='Games per chunk')
     p.add_argument('--lr',           type=float, default=1e-3)
-    p.add_argument('--model-path',   default='chessnet.pth', help='Path to save/load model')
+    p.add_argument('--model-path',   default='danibot.pth', help='Path to save/load model')
     p.add_argument('--amp', dest='amp', action='store_true', help='Enable mixed precision on CUDA/MPS')
     p.add_argument('--no-amp', dest='amp', action='store_false', help='Disable mixed precision')
     p.add_argument('--compile', dest='compile_model', action='store_true', help='Enable torch.compile for model')
@@ -328,25 +345,29 @@ def main():
 
                 chunk_idx += 1
                 prep_start = time.perf_counter()
-                x_chunk, y_chunk = build_chunk_tensors(games, move2idx)
+                result = build_chunk_tensors(games, move2idx)
                 prep_time = time.perf_counter() - prep_start
 
-                if x_chunk is None:
+                if result[0] is None:
                     continue
+                x_chunk, y_chunk, v_chunk = result
 
                 # Pin host memory for faster H2D copies when batching from CPU tensors.
                 if device.type == 'cuda' and not chunk_on_device:
                     x_chunk = x_chunk.pin_memory()
                     y_chunk = y_chunk.pin_memory()
+                    v_chunk = v_chunk.pin_memory()
 
                 x_chunk_dev = None
                 y_chunk_dev = None
+                v_chunk_dev = None
                 used_chunk_on_device = False
                 move_start = time.perf_counter()
                 if chunk_on_device and device.type in ('cuda', 'mps'):
                     try:
                         x_chunk_dev = x_chunk.to(device, non_blocking=(device.type == 'cuda'))
                         y_chunk_dev = y_chunk.to(device, non_blocking=(device.type == 'cuda'))
+                        v_chunk_dev = v_chunk.to(device, non_blocking=(device.type == 'cuda'))
                         used_chunk_on_device = True
                     except RuntimeError as e:
                         print(f"⚠️ chunk-on-device disabled for this chunk (OOM/fallback): {e}")
@@ -371,17 +392,28 @@ def main():
                     if used_chunk_on_device:
                         xb = x_chunk_dev.index_select(0, batch_indices)
                         yb = y_chunk_dev.index_select(0, batch_indices)
+                        vb = v_chunk_dev.index_select(0, batch_indices)
                     else:
                         xb = x_chunk.index_select(0, batch_indices)
                         yb = y_chunk.index_select(0, batch_indices)
+                        vb = v_chunk.index_select(0, batch_indices)
                         xb = xb.to(device, non_blocking=(device.type == 'cuda'))
                         yb = yb.to(device, non_blocking=(device.type == 'cuda'))
+                        vb = vb.to(device, non_blocking=(device.type == 'cuda'))
 
                     optimizer.zero_grad(set_to_none=True)
 
                     with autocast_ctx():
-                        logits = model(xb)
-                        loss = criterion(logits, yb)
+                        output = model(xb)
+                        # Support both (policy, value) and policy-only models
+                        if isinstance(output, tuple):
+                            logits, value_pred = output
+                            policy_loss = criterion(logits, yb)
+                            value_loss = nn.functional.mse_loss(value_pred.squeeze(-1), vb)
+                            loss = policy_loss + value_loss
+                        else:
+                            logits = output
+                            loss = criterion(logits, yb)
 
                     if scaler.is_enabled():
                         scaler.scale(loss).backward()
@@ -399,8 +431,9 @@ def main():
                     chunk_total += xb.size(0)
                     chunk_loss_tensor += loss.detach()
                     if not args.training_only:
-                        _, predicted = logits.max(1)
-                        chunk_correct_tensor += predicted.eq(yb).sum()
+                        with torch.no_grad():
+                            _, predicted = logits.max(1)
+                            chunk_correct_tensor += predicted.eq(yb).sum()
 
                 train_time = time.perf_counter() - train_start
                 chunk_loss = chunk_loss_tensor.item()
