@@ -4,7 +4,6 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
-import org.library.usersbe.UsersBeApplication;
 import org.library.usersbe.model.Role;
 import org.library.usersbe.model.User;
 import org.library.usersbe.repository.UserRepository;
@@ -158,8 +157,8 @@ class UserServiceTest {
     // ─── Authenticate ───────────────────────────────────────────────────
 
     @Test
-    @DisplayName("authenticate → valid credentials → returns true")
-    void authenticate_validCredentials_returnsTrue() {
+    @DisplayName("authenticate → valid credentials → returns authenticated user")
+    void authenticate_validCredentials_returnsUser() {
         User user = new User();
         user.setUsername("alice");
         user.setPassword("encoded_pass");
@@ -168,15 +167,16 @@ class UserServiceTest {
         when(passwordEncoderHelper.matches("rawpass", "encoded_pass")).thenReturn(true);
         when(sessionManager.createSession(user)).thenReturn("session-123");
 
-        boolean result = userService.authenticate("alice", "rawpass");
+        User result = userService.authenticate("alice", "rawpass");
 
-        assertTrue(result);
-        assertEquals("session-123", UsersBeApplication.sessionID);
+        assertNotNull(result);
+        assertEquals("alice", result.getUsername());
+        verify(sessionManager).createSession(user);
     }
 
     @Test
-    @DisplayName("authenticate → wrong password → returns false")
-    void authenticate_wrongPassword_returnsFalse() {
+    @DisplayName("authenticate → wrong password → returns null")
+    void authenticate_wrongPassword_returnsNull() {
         User user = new User();
         user.setUsername("alice");
         user.setPassword("encoded_pass");
@@ -184,19 +184,19 @@ class UserServiceTest {
         when(userRepository.getUserByUsername("alice")).thenReturn(user);
         when(passwordEncoderHelper.matches("wrongpass", "encoded_pass")).thenReturn(false);
 
-        boolean result = userService.authenticate("alice", "wrongpass");
+        User result = userService.authenticate("alice", "wrongpass");
 
-        assertFalse(result);
+        assertNull(result);
     }
 
     @Test
-    @DisplayName("authenticate → unknown user → returns false")
-    void authenticate_unknownUser_returnsFalse() {
+    @DisplayName("authenticate → unknown user → returns null")
+    void authenticate_unknownUser_returnsNull() {
         when(userRepository.getUserByUsername("unknown")).thenReturn(null);
 
-        boolean result = userService.authenticate("unknown", "anypass");
+        User result = userService.authenticate("unknown", "anypass");
 
-        assertFalse(result);
+        assertNull(result);
     }
 
     // ─── Get User By Username ───────────────────────────────────────────
@@ -223,19 +223,5 @@ class UserServiceTest {
         assertNull(userService.getUserByUsername("unknown"));
     }
 
-    // ─── Get User From Session ──────────────────────────────────────────
-
-    @Test
-    @DisplayName("getUserFromSession → delegates to session manager")
-    void getUserFromSession_delegatesToSessionManager() {
-        User user = new User();
-        user.setUsername("alice");
-
-        when(sessionManager.getUserFromSession()).thenReturn(user);
-
-        User result = userService.getUserFromSession();
-
-        assertEquals("alice", result.getUsername());
-    }
 }
 

@@ -74,8 +74,9 @@ public class UserController {
 
     @PostMapping("/authenticate")
     public ResponseEntity<User> authenticate(@RequestBody LoginCredentials credentials) {
-        if(userService.authenticate(credentials.getUsername(), credentials.getPassword())){
-            User user = userService.getUserFromSession();
+        User user = userService.authenticate(credentials.getUsername(), credentials.getPassword());
+
+        if (user != null) {
             return new ResponseEntity<>(user, HttpStatus.OK);
         } else {
             return new ResponseEntity<>(null, HttpStatus.UNAUTHORIZED);

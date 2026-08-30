@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
-"""Export mainline PGN positions to a CSV with columns: FEN, Move.
+"""Export mainline PGN positions to a CSV with columns: FEN, Move, Result.
 
 Each CSV row contains:
   - FEN: board state before the move
   - Move: associated move from the PGN mainline
+  - Result: the game's final result ("1-0" / "0-1" / "1/2-1/2"), used as the
+    value-head training target. Use --no-result for the legacy two-column format.
 
 By default the move is written in SAN, because that matches the PGN move text.
 Use --move-format uci if you want machine-friendly moves instead.
@@ -67,10 +69,28 @@ def build_parser() -> argparse.ArgumentParser:
         help="Print progress every N valid games (0 disables progress output)",
     )
     parser.add_argument(
+        "--result",
+        dest="result",
+        action="store_true",
+        help="Write a Result column (required to train the value head)",
+    )
+    parser.add_argument(
+        "--no-result",
+        dest="result",
+        action="store_false",
+        help="Emit the legacy FEN,Move-only CSV",
+    )
+    parser.add_argument(
+        "--skip-unfinished",
+        action="store_true",
+        help="Skip games whose Result is not 1-0, 0-1 or 1/2-1/2",
+    )
+    parser.add_argument(
         "--encoding",
         default="utf-8",
         help="File encoding used for input/output (default: utf-8)",
     )
+    parser.set_defaults(result=True)
     return parser
 
 
@@ -87,6 +107,8 @@ def export_fen_moves(
     max_games: Optional[int],
     progress_every: int,
     encoding: str,
+    with_result: bool = True,
+    skip_unfinished: bool = False,
 ) -> tuple[int, int, int]:
     scanned_games = 0
     written_games = 0
@@ -99,7 +121,7 @@ def export_fen_moves(
         "w", newline="", encoding=encoding
     ) as csv_file:
         writer = csv.writer(csv_file)
-        writer.writerow(["FEN", "Move"])
+        writer.writerow(["FEN", "Move", "Result"] if with_result else ["FEN", "Move"])
 
         while True:
             if max_games is not None and scanned_games >= max_games:
@@ -110,14 +132,19 @@ def export_fen_moves(
                 break
 
             scanned_games += 1
+            result = game.headers.get("Result", "*")
+            if skip_unfinished and result not in ("1-0", "0-1", "1/2-1/2"):
+                skipped_games += 1
+                continue
+
             board = game.board()
-            game_rows: list[tuple[str, str]] = []
+            game_rows: list[tuple[str, ...]] = []
 
             try:
                 for move in game.mainline_moves():
                     fen = board.fen()
                     move_text = move_to_text(board, move, move_format)
-                    game_rows.append((fen, move_text))
+                    game_rows.append((fen, move_text, result) if with_result else (fen, move_text))
                     board.push(move)
             except Exception as exc:
                 skipped_games += 1
@@ -155,12 +182,15 @@ def main() -> None:
         max_games=args.max_games,
         progress_every=args.progress_every,
         encoding=args.encoding,
+        with_result=args.result,
+        skip_unfinished=args.skip_unfinished,
     )
 
     print("Done.")
     print(f"Input PGN: {args.input_pgn}")
     print(f"Output CSV: {args.output_csv}")
     print(f"Move format: {args.move_format}")
+    print(f"Result column: {args.result}")
     print(f"Written games: {written_games}")
     print(f"Written rows: {written_rows}")
     print(f"Skipped malformed games: {skipped_games}")

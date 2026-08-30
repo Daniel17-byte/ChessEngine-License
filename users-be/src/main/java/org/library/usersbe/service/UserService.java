@@ -1,6 +1,5 @@
 package org.library.usersbe.service;
 
-import org.library.usersbe.UsersBeApplication;
 import org.library.usersbe.model.User;
 import org.library.usersbe.repository.UserRepository;
 import org.springframework.stereotype.Service;
@@ -48,23 +47,19 @@ public class UserService {
         userRepository.delete(user);
     }
 
-    public boolean authenticate(String username, String password) {
+    public User authenticate(String username, String password) {
         User user = userRepository.getUserByUsername(username);
 
         if (user == null) {
-            return false;
+            return null;
         }
 
         if (passwordEncoderHelper.matches(password, user.getPassword())) {
-            UsersBeApplication.sessionID = sessionManager.createSession(user);
-            return true;
-        } else
-            return false;
+            sessionManager.createSession(user);
+            return user;
+        }
 
-    }
-
-    public User getUserFromSession() {
-        return sessionManager.getUserFromSession();
+        return null;
     }
 
     public User getUserByUsername(String username) {

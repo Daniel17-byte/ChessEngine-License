@@ -10,6 +10,9 @@ from ChessNet import ChessNet
 from contextlib import nullcontext
 import os
 import json
+import math
+import queue
+import threading
 import time
 
 USE_CYTHON_ENCODE = os.getenv("CHESS_ENCODE_FORCE_PYTHON", "0") != "1"
@@ -202,6 +205,115 @@ def build_chunk_tensors(games, move2idx):
     v_np = np.asarray(v_list, dtype=np.float32)
     return torch.from_numpy(x_np), torch.from_numpy(y_np), torch.from_numpy(v_np)
 
+def lr_at_step(step, peak_lr, min_lr, warmup_steps, total_steps):
+    """Linear warmup then cosine decay, evaluated per optimizer step.
+
+    The old schedule was a constant LR for the whole run, which leaves accuracy
+    on the table late in training.
+    """
+    if warmup_steps > 0 and step < warmup_steps:
+        return peak_lr * (step + 1) / warmup_steps
+    total = max(total_steps, warmup_steps + 1)
+    progress = (step - warmup_steps) / max(total - warmup_steps, 1)
+    progress = min(max(progress, 0.0), 1.0)
+    return min_lr + 0.5 * (peak_lr - min_lr) * (1.0 + math.cos(math.pi * progress))
+
+
+def prefetch_iter(iterable, depth):
+    """Run `iterable` on a background thread so PGN parsing overlaps with training."""
+    if depth <= 0:
+        yield from iterable
+        return
+
+    q = queue.Queue(maxsize=depth)
+    sentinel = object()
+
+    def worker():
+        try:
+            for item in iterable:
+                q.put(item)
+        except BaseException as exc:
+            q.put(exc)
+        finally:
+            q.put(sentinel)
+
+    thread = threading.Thread(target=worker, daemon=True)
+    thread.start()
+    try:
+        while True:
+            item = q.get()
+            if item is sentinel:
+                return
+            if isinstance(item, BaseException):
+                raise item
+            yield item
+    finally:
+        while thread.is_alive():
+            try:
+                if q.get(timeout=0.1) is sentinel:
+                    break
+            except queue.Empty:
+                pass
+
+
+def read_game_chunks(pgn_path, chunk_size, move2idx, encoding='utf-8', skip_games=0):
+    """Yield (x, y, v, n_games) tensors, one chunk of games at a time.
+
+    `skip_games` steps over the validation games that sit at the head of the file.
+    """
+    with open(pgn_path, 'r', encoding=encoding, errors='replace') as f:
+        for _ in range(skip_games):
+            if chess.pgn.read_game(f) is None:
+                return
+        while True:
+            games = []
+            for _ in range(chunk_size):
+                g = chess.pgn.read_game(f)
+                if g is None:
+                    break
+                games.append(g)
+            if not games:
+                return
+            x, y, v = build_chunk_tensors(games, move2idx)
+            if x is not None:
+                yield x, y, v, len(games)
+
+
+@torch.no_grad()
+def evaluate_holdout(model, holdout, device, criterion, batch_size, value_weight):
+    """Policy/value metrics on games the trainer never sees."""
+    if not holdout:
+        return None
+    model.eval()
+    rows = loss_sum = policy_sum = value_sum = 0.0
+    top1 = top5 = 0
+    for x_chunk, y_chunk, v_chunk in holdout:
+        for start in range(0, x_chunk.size(0), batch_size):
+            xb = x_chunk[start:start + batch_size].to(device)
+            yb = y_chunk[start:start + batch_size].to(device)
+            vb = v_chunk[start:start + batch_size].to(device)
+            logits, value_pred = model(xb)
+            policy_loss = criterion(logits, yb)
+            value_loss = nn.functional.mse_loss(value_pred.squeeze(-1), vb)
+            n = xb.size(0)
+            rows += n
+            loss_sum += (policy_loss + value_weight * value_loss).item() * n
+            policy_sum += policy_loss.item() * n
+            value_sum += value_loss.item() * n
+            top1 += logits.argmax(1).eq(yb).sum().item()
+            top5 += logits.topk(min(5, logits.size(1)), dim=1).indices.eq(yb.unsqueeze(1)).any(1).sum().item()
+    model.train()
+    rows = max(rows, 1)
+    return {
+        'rows': int(rows),
+        'loss': loss_sum / rows,
+        'policy': policy_sum / rows,
+        'value': value_sum / rows,
+        'top1': 100.0 * top1 / rows,
+        'top5': 100.0 * top5 / rows,
+    }
+
+
 # ── main ─────────────────────────────────────────────────────────────────────
 
 def main():
@@ -219,6 +331,14 @@ def main():
     p.add_argument('--chunk-on-device', dest='chunk_on_device', action='store_true', help='Move whole chunk to device before batching')
     p.add_argument('--no-chunk-on-device', dest='chunk_on_device', action='store_false', help='Keep chunk on CPU and copy per batch')
     p.add_argument('--grad-clip', type=float, default=1.0, help='Gradient norm clip value; <=0 disables clipping')
+    p.add_argument('--val-games', type=int, default=2000, help='Games held out for validation; 0 disables validation')
+    p.add_argument('--val-fraction', type=float, default=0.02, help='Fraction of chunks routed to the held-out set')
+    p.add_argument('--min-lr', type=float, default=1e-5, help='Final LR of the cosine decay')
+    p.add_argument('--warmup-steps', type=int, default=500, help='Linear LR warmup steps; 0 disables warmup')
+    p.add_argument('--total-steps', type=int, default=None, help='Optimizer steps the cosine decay spans (estimated from PGN size when omitted)')
+    p.add_argument('--label-smoothing', type=float, default=0.05, help='Policy cross-entropy label smoothing')
+    p.add_argument('--value-weight', type=float, default=1.0, help='Weight of the value loss')
+    p.add_argument('--prefetch', type=int, default=3, help='Chunks parsed/encoded ahead on a loader thread; 0 disables it')
     p.add_argument('--training-only', dest='training_only', action='store_true', help='Use throughput-focused training mode (skip accuracy metrics)')
     p.add_argument('--full-metrics', dest='training_only', action='store_false', help='Compute full accuracy metrics during training')
     p.set_defaults(amp=None, compile_model=False, chunk_on_device=None, training_only=True)
@@ -287,7 +407,15 @@ def main():
     else:
         optimizer = torch.optim.Adam(model.parameters(), **adam_kwargs)
 
-    criterion = nn.CrossEntropyLoss()
+    criterion = nn.CrossEntropyLoss(label_smoothing=args.label_smoothing)
+
+    if args.total_steps is None:
+        # ~340 bytes of PGN per training position; only shapes the LR curve.
+        est_rows = max(int(os.path.getsize(args.pgn) / 340), batch_size)
+        args.total_steps = max(int(est_rows * args.epochs / batch_size), 1)
+    args.warmup_steps = min(args.warmup_steps, max(args.total_steps // 10, 1))
+    print(f"LR schedule: {args.lr} -> {args.min_lr} over ~{args.total_steps} steps (warmup {args.warmup_steps})")
+    sys.stdout.flush()
 
     # Load existing model if available
     if os.path.exists(args.model_path):
@@ -307,8 +435,12 @@ def main():
             print(f"⚠️ torch.compile failed, continuing without it: {e}")
         sys.stdout.flush()
 
-    if amp_enabled and device.type in ('cuda', 'mps'):
-        autocast_ctx = lambda: torch.autocast(device_type=device.type, dtype=torch.float16)
+    if amp_enabled and device.type == 'cuda':
+        autocast_ctx = lambda: torch.autocast(device_type='cuda', dtype=torch.float16)
+    elif amp_enabled and device.type == 'mps':
+        # fp16 on MPS runs without a GradScaler, so gradients can underflow to zero.
+        # bf16 has the range to be safe; note it measures slower than fp32 here.
+        autocast_ctx = lambda: torch.autocast(device_type='mps', dtype=torch.bfloat16)
     else:
         autocast_ctx = nullcontext
 
@@ -317,6 +449,26 @@ def main():
         scaler = torch.amp.GradScaler('cuda', enabled=amp_enabled and device.type == 'cuda')
     else:
         scaler = torch.cuda.amp.GradScaler(enabled=amp_enabled and device.type == 'cuda')
+
+    # ── Hold out whole games for validation ───────────────────────────────
+    # Whole games, not random positions: consecutive positions come from the same
+    # game, so a positional split would leak near-duplicates and inflate accuracy.
+    holdout = []
+    holdout_games = 0
+    if args.val_games > 0:
+        print(f"Reserving up to {args.val_games} games for validation...")
+        sys.stdout.flush()
+        for x_c, y_c, v_c, n_g in read_game_chunks(args.pgn, args.chunk_size, move2idx):
+            holdout.append((x_c, y_c, v_c))
+            holdout_games += n_g
+            if holdout_games >= args.val_games:
+                break
+        print(f"Held out {holdout_games} games / {sum(t[0].size(0) for t in holdout)} positions")
+        sys.stdout.flush()
+
+    global_step = 0
+    best_val_loss = float('inf')
+    best_model_path = os.path.splitext(args.model_path)[0] + '_best' + os.path.splitext(args.model_path)[1]
 
     # ── Chunked training over PGN ─────────────────────────────────────────
     for epoch in range(args.epochs):
@@ -330,27 +482,15 @@ def main():
         epoch_batches = 0
         chunk_idx = 0
 
-        with open(args.pgn, 'r', encoding='utf-8') as f:
-            while True:
-                # Read a chunk of games
-                games = []
-                for _ in range(args.chunk_size):
-                    g = chess.pgn.read_game(f)
-                    if g is None:
-                        break
-                    games.append(g)
-
-                if not games:
-                    break
-
+        chunk_source = read_game_chunks(
+            args.pgn, args.chunk_size, move2idx, skip_games=holdout_games,
+        )
+        wait_start = time.perf_counter()
+        for x_chunk, y_chunk, v_chunk, n_games in prefetch_iter(chunk_source, args.prefetch):
+                # Parsing/encoding happens on the loader thread, so this is only
+                # the time we actually sat waiting for it.
+                prep_time = time.perf_counter() - wait_start
                 chunk_idx += 1
-                prep_start = time.perf_counter()
-                result = build_chunk_tensors(games, move2idx)
-                prep_time = time.perf_counter() - prep_start
-
-                if result[0] is None:
-                    continue
-                x_chunk, y_chunk, v_chunk = result
 
                 # Pin host memory for faster H2D copies when batching from CPU tensors.
                 if device.type == 'cuda' and not chunk_on_device:
@@ -401,6 +541,12 @@ def main():
                         yb = yb.to(device, non_blocking=(device.type == 'cuda'))
                         vb = vb.to(device, non_blocking=(device.type == 'cuda'))
 
+                    lr_now = lr_at_step(global_step, args.lr, args.min_lr,
+                                        args.warmup_steps, args.total_steps)
+                    for group in optimizer.param_groups:
+                        group['lr'] = lr_now
+                    global_step += 1
+
                     optimizer.zero_grad(set_to_none=True)
 
                     with autocast_ctx():
@@ -410,7 +556,7 @@ def main():
                             logits, value_pred = output
                             policy_loss = criterion(logits, yb)
                             value_loss = nn.functional.mse_loss(value_pred.squeeze(-1), vb)
-                            loss = policy_loss + value_loss
+                            loss = policy_loss + args.value_weight * value_loss
                         else:
                             logits = output
                             loss = criterion(logits, yb)
@@ -446,14 +592,14 @@ def main():
                 epoch_batches += n_batches
 
                 # Print progress every chunk
-                if chunk_idx % 10 == 0 or len(games) < args.chunk_size:
+                if chunk_idx % 10 == 0 or n_games < args.chunk_size:
                     total_avg_loss = epoch_loss / max(epoch_batches, 1)
                     chunk_avg_loss = chunk_loss / max(n_batches, 1)
                     pos_per_sec = chunk_total / max(train_time, 1e-9)
                     if args.training_only:
                         print(
                             f"Batch {chunk_idx} | "
-                            f"Chunk: {len(games)} games, {num_samples} positions | "
+                            f"Chunk: {n_games} games, {num_samples} positions | "
                             f"Prep: {prep_time:.2f}s | "
                             f"Move: {move_time:.2f}s | "
                             f"Train: {train_time:.2f}s ({pos_per_sec:.0f} pos/s) | "
@@ -465,7 +611,7 @@ def main():
                         total_acc = 100.0 * epoch_correct / max(epoch_total, 1)
                         print(
                             f"Batch {chunk_idx} | "
-                            f"Chunk: {len(games)} games, {num_samples} positions | "
+                            f"Chunk: {n_games} games, {num_samples} positions | "
                             f"Prep: {prep_time:.2f}s | "
                             f"Move: {move_time:.2f}s | "
                             f"Train: {train_time:.2f}s ({pos_per_sec:.0f} pos/s) | "
@@ -481,6 +627,8 @@ def main():
                     torch.save(model.state_dict(), args.model_path)
                     print(f"💾 Checkpoint saved at chunk {chunk_idx}")
                     sys.stdout.flush()
+
+                wait_start = time.perf_counter()
 
         # End of epoch
         epoch_time = time.perf_counter() - epoch_start
@@ -507,12 +655,27 @@ def main():
             print(f"Epoch {epoch+1}/{args.epochs} - No positions processed")
         sys.stdout.flush()
 
+        metrics = evaluate_holdout(model, holdout, device, criterion, batch_size, args.value_weight)
+        if metrics is not None:
+            print(
+                f"Validation | Loss: {metrics['loss']:.4f} | Policy: {metrics['policy']:.4f} | "
+                f"Value: {metrics['value']:.4f} | Top-1: {metrics['top1']:.1f}% | "
+                f"Top-5: {metrics['top5']:.1f}% | Rows: {metrics['rows']}"
+            )
+            if metrics['loss'] < best_val_loss:
+                best_val_loss = metrics['loss']
+                torch.save(model.state_dict(), best_model_path)
+                print(f"🏆 New best validation loss — saved {best_model_path}")
+            sys.stdout.flush()
+
         # Save after each epoch
         torch.save(model.state_dict(), args.model_path)
         print(f"💾 Model saved to {args.model_path}")
         sys.stdout.flush()
 
     print(f"✅ Training complete! Model saved to '{args.model_path}'")
+    if best_val_loss < float('inf'):
+        print(f"   Best validation loss {best_val_loss:.4f} -> {best_model_path}")
     sys.stdout.flush()
 
 

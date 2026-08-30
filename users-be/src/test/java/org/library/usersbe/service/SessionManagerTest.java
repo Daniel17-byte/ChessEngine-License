@@ -3,7 +3,6 @@ package org.library.usersbe.service;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
-import org.library.usersbe.UsersBeApplication;
 import org.library.usersbe.model.User;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -15,7 +14,6 @@ class SessionManagerTest {
     @BeforeEach
     void setUp() {
         sessionManager = new SessionManager();
-        UsersBeApplication.sessionID = null;
     }
 
     @Test
@@ -70,37 +68,6 @@ class SessionManagerTest {
     @DisplayName("getUsernameForSession → invalid session → returns null")
     void getUsernameForSession_invalidSession_returnsNull() {
         assertNull(sessionManager.getUsernameForSession("fake-id"));
-    }
-
-    @Test
-    @DisplayName("getUserFromSession → valid static session → returns user")
-    void getUserFromSession_validStaticSession_returnsUser() {
-        User user = new User();
-        user.setUsername("charlie");
-
-        String sessionId = sessionManager.createSession(user);
-        UsersBeApplication.sessionID = sessionId;
-
-        User result = sessionManager.getUserFromSession();
-
-        assertNotNull(result);
-        assertEquals("charlie", result.getUsername());
-    }
-
-    @Test
-    @DisplayName("getUserFromSession → no static session → returns null")
-    void getUserFromSession_noStaticSession_returnsNull() {
-        UsersBeApplication.sessionID = null;
-
-        assertNull(sessionManager.getUserFromSession());
-    }
-
-    @Test
-    @DisplayName("getUserFromSession → invalid static session → returns null")
-    void getUserFromSession_invalidStaticSession_returnsNull() {
-        UsersBeApplication.sessionID = "totally-fake";
-
-        assertNull(sessionManager.getUserFromSession());
     }
 
     @Test

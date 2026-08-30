@@ -1,6 +1,5 @@
 package org.library.usersbe.service;
 
-import org.library.usersbe.UsersBeApplication;
 import org.library.usersbe.model.User;
 import org.springframework.stereotype.Service;
 
@@ -28,14 +27,5 @@ public class SessionManager {
 
     private String generateSessionId() {
         return UUID.randomUUID().toString();
-    }
-
-    public User getUserFromSession() {
-        if (!isValidSession(UsersBeApplication.sessionID)){
-            return null;
-        }
-
-        return sessions.get(UsersBeApplication.sessionID);
-
     }
 }

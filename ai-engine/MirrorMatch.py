@@ -339,8 +339,10 @@ def main():
             y = moves_tensor.index_select(0, batch_indices).to(device, non_blocking=(device.type == "cuda"))
 
             optimizer.zero_grad(set_to_none=True)
-            outputs = ai_white.model(X)
-            loss = criterion(outputs, y)
+            # ChessNet returns (policy_logits, value); only the policy head is
+            # supervised here, since self-play samples carry no value target.
+            logits, _ = ai_white.model(X)
+            loss = criterion(logits, y)
             loss.backward()
             torch.nn.utils.clip_grad_norm_(ai_white.model.parameters(), 1.0)
             optimizer.step()
@@ -358,8 +360,10 @@ def main():
         scheduler.step()
         avg_loss = total_loss / max(n_batches, 1)
 
-        last_result = list(stats.keys())[-1] if stats else '*'
-        winner = "White" if last_result == "1-0" else "Black" if last_result == "0-1" else "Draw"
+        # Report the epoch's dominant outcome. stats is a Counter, so its key
+        # order is insertion order, not "the last game played".
+        top_result = stats.most_common(1)[0][0] if stats else '*'
+        winner = "White" if top_result == "1-0" else "Black" if top_result == "0-1" else "Draw"
 
         print_status(epoch + 1, args.epochs, avg_loss, winner, all_stats)
 
