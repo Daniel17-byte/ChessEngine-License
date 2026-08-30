@@ -167,11 +167,11 @@ def _result_to_value(result_str: str, turn_is_white: bool) -> float:
         return 0.0
 
 
-def build_chunk_tensors(games, move2idx):
+def build_chunk_tensors(games, move2idx, legal_mask=False, n_moves=0):
     """Encode one chunk of games into contiguous tensors once, then train from them.
 
     Uses Cython batch encoding when available for ~3-5x speedup on the encoding step.
-    Returns (x_tensor, y_policy_tensor, y_value_tensor) or (None, None, None).
+    Returns (x, y_policy, y_value, legal_mask_or_None) or (None, None, None, None).
     """
     # Collect boards and labels first, then batch-encode
     boards = []
@@ -192,7 +192,7 @@ def build_chunk_tensors(games, move2idx):
             board.push(move)
 
     if not boards:
-        return None, None, None
+        return None, None, None, None
 
     # Batch encode all boards at once (Cython fast path)
     if HAS_CYTHON_BATCH:
@@ -203,7 +203,19 @@ def build_chunk_tensors(games, move2idx):
 
     y_np = np.asarray(y_list, dtype=np.int64)
     v_np = np.asarray(v_list, dtype=np.float32)
-    return torch.from_numpy(x_np), torch.from_numpy(y_np), torch.from_numpy(v_np)
+
+    mask_t = None
+    if legal_mask:
+        mask_np = np.zeros((len(boards), n_moves), dtype=bool)
+        for i, b in enumerate(boards):
+            for mv in b.legal_moves:
+                j = move2idx.get(mv.uci())
+                if j is not None:
+                    mask_np[i, j] = True
+        mask_t = torch.from_numpy(mask_np)
+
+    return (torch.from_numpy(x_np), torch.from_numpy(y_np),
+            torch.from_numpy(v_np), mask_t)
 
 def lr_at_step(step, peak_lr, min_lr, warmup_steps, total_steps):
     """Linear warmup then cosine decay, evaluated per optimizer step.
@@ -256,52 +268,86 @@ def prefetch_iter(iterable, depth):
                 pass
 
 
-def read_game_chunks(pgn_path, chunk_size, move2idx, encoding='utf-8', skip_games=0):
-    """Yield (x, y, v, n_games) tensors, one chunk of games at a time.
+def game_is_validation(game_id, seed, val_fraction):
+    """Deterministic per-game split, stable across epochs and runs."""
+    if val_fraction <= 0.0:
+        return False
+    h = (game_id * 2654435761 + seed * 40503) & 0xFFFFFFFF
+    return (h / 0x100000000) < val_fraction
 
-    `skip_games` steps over the validation games that sit at the head of the file.
+
+def read_game_chunks(pgn_path, chunk_size, move2idx, encoding='utf-8',
+                     split='train', val_fraction=0.0, seed=1234,
+                     legal_mask=False, n_moves=0):
+    """Yield (x, y, v, mask, n_games) chunks for one split of the PGN.
+
+    Games are assigned to train/val by a hash of their sequential index, not by
+    position in the file. Taking the head of the file instead would validate on
+    the oldest games only — Lichess databases are chronological, so that holdout
+    is not a representative sample.
     """
     with open(pgn_path, 'r', encoding=encoding, errors='replace') as f:
-        for _ in range(skip_games):
-            if chess.pgn.read_game(f) is None:
-                return
+        game_id = -1
         while True:
             games = []
-            for _ in range(chunk_size):
+            while len(games) < chunk_size:
                 g = chess.pgn.read_game(f)
                 if g is None:
                     break
-                games.append(g)
+                game_id += 1
+                in_val = game_is_validation(game_id, seed, val_fraction)
+                if in_val == (split == 'val'):
+                    games.append(g)
             if not games:
                 return
-            x, y, v = build_chunk_tensors(games, move2idx)
-            if x is not None:
-                yield x, y, v, len(games)
+            x, y, v, m = build_chunk_tensors(games, move2idx, legal_mask, n_moves)
+            yield x, y, v, m, len(games)
+
+
+def masked_policy_loss(logits, targets, mask, label_smoothing, criterion):
+    """Cross-entropy restricted to legal moves.
+
+    -inf logits cannot go through nn.CrossEntropyLoss with label smoothing: the
+    smoothing puts weight on every class, so the illegal ones make the loss inf.
+    Spread the smoothing mass over the legal moves instead.
+    """
+    if mask is None:
+        return criterion(logits, targets)
+    log_probs = torch.log_softmax(logits.masked_fill(~mask, float('-inf')), dim=1)
+    target_lp = log_probs.gather(1, targets.unsqueeze(1)).squeeze(1)
+    if label_smoothing <= 0:
+        return -target_lp.mean()
+    n_legal = mask.sum(dim=1).clamp(min=1)
+    legal_lp = log_probs.masked_fill(~mask, 0.0).sum(dim=1) / n_legal
+    return -((1.0 - label_smoothing) * target_lp + label_smoothing * legal_lp).mean()
 
 
 @torch.no_grad()
-def evaluate_holdout(model, holdout, device, criterion, batch_size, value_weight):
+def evaluate_holdout(model, holdout, device, criterion, batch_size, value_weight,
+                     label_smoothing=0.0):
     """Policy/value metrics on games the trainer never sees."""
     if not holdout:
         return None
     model.eval()
     rows = loss_sum = policy_sum = value_sum = 0.0
     top1 = top5 = 0
-    for x_chunk, y_chunk, v_chunk in holdout:
+    for x_chunk, y_chunk, v_chunk, m_chunk in holdout:
         for start in range(0, x_chunk.size(0), batch_size):
-            xb = x_chunk[start:start + batch_size].to(device)
+            xb = x_chunk[start:start + batch_size].to(device, dtype=torch.float32)
             yb = y_chunk[start:start + batch_size].to(device)
             vb = v_chunk[start:start + batch_size].to(device)
+            mb = m_chunk[start:start + batch_size].to(device) if m_chunk is not None else None
             logits, value_pred = model(xb)
-            policy_loss = criterion(logits, yb)
+            policy_loss = masked_policy_loss(logits, yb, mb, label_smoothing, criterion)
             value_loss = nn.functional.mse_loss(value_pred.squeeze(-1), vb)
             n = xb.size(0)
             rows += n
             loss_sum += (policy_loss + value_weight * value_loss).item() * n
             policy_sum += policy_loss.item() * n
             value_sum += value_loss.item() * n
-            top1 += logits.argmax(1).eq(yb).sum().item()
-            top5 += logits.topk(min(5, logits.size(1)), dim=1).indices.eq(yb.unsqueeze(1)).any(1).sum().item()
+            scored = logits if mb is None else logits.masked_fill(~mb, float('-inf'))
+            top1 += scored.argmax(1).eq(yb).sum().item()
+            top5 += scored.topk(min(5, scored.size(1)), dim=1).indices.eq(yb.unsqueeze(1)).any(1).sum().item()
     model.train()
     rows = max(rows, 1)
     return {
@@ -312,6 +358,32 @@ def evaluate_holdout(model, holdout, device, criterion, batch_size, value_weight
         'top1': 100.0 * top1 / rows,
         'top5': 100.0 * top5 / rows,
     }
+
+
+def save_resume_state(path, model, optimizer, epoch, chunks_done, global_step,
+                      best_val_loss, args):
+    """Persist enough to continue a long PGN run after an interruption."""
+    directory = os.path.dirname(path)
+    if directory:
+        os.makedirs(directory, exist_ok=True)
+    raw = model._orig_mod if hasattr(model, '_orig_mod') else model
+    torch.save({
+        'model_state': raw.state_dict(),
+        'optimizer_state': optimizer.state_dict(),
+        'epoch': epoch,
+        'chunks_done_in_epoch': chunks_done,
+        'global_step': global_step,
+        'best_val_loss': best_val_loss,
+        'args': {k: str(v) for k, v in vars(args).items()},
+        'saved_at': time.time(),
+    }, path)
+
+
+def load_resume_state(path, model, optimizer, device):
+    state = torch.load(path, map_location=device, weights_only=False)
+    model.load_state_dict(state['model_state'])
+    optimizer.load_state_dict(state['optimizer_state'])
+    return state
 
 
 # ── main ─────────────────────────────────────────────────────────────────────
@@ -332,7 +404,15 @@ def main():
     p.add_argument('--no-chunk-on-device', dest='chunk_on_device', action='store_false', help='Keep chunk on CPU and copy per batch')
     p.add_argument('--grad-clip', type=float, default=1.0, help='Gradient norm clip value; <=0 disables clipping')
     p.add_argument('--val-games', type=int, default=2000, help='Games held out for validation; 0 disables validation')
-    p.add_argument('--val-fraction', type=float, default=0.02, help='Fraction of chunks routed to the held-out set')
+    p.add_argument('--val-max-positions', type=int, default=60000, help='Cap on held-out positions kept in memory')
+    p.add_argument('--val-fraction', type=float, default=0.02, help='Fraction of games held out (deterministic per-game hash)')
+    p.add_argument('--seed', type=int, default=1234, help='RNG seed; also fixes the train/val split')
+    p.add_argument('--legal-mask', dest='legal_mask', action='store_true', help='Mask illegal moves out of the policy softmax')
+    p.add_argument('--no-legal-mask', dest='legal_mask', action='store_false')
+    p.add_argument('--checkpoint-path', default='checkpoints/archivealpha_resume.pt', help='Resume checkpoint path')
+    p.add_argument('--checkpoint-every-chunks', type=int, default=100, help='Save model + resume state every N chunks')
+    p.add_argument('--resume', dest='resume', action='store_true', help='Resume from checkpoint if present')
+    p.add_argument('--no-resume', dest='resume', action='store_false', help='Ignore the resume checkpoint')
     p.add_argument('--min-lr', type=float, default=1e-5, help='Final LR of the cosine decay')
     p.add_argument('--warmup-steps', type=int, default=500, help='Linear LR warmup steps; 0 disables warmup')
     p.add_argument('--total-steps', type=int, default=None, help='Optimizer steps the cosine decay spans (estimated from PGN size when omitted)')
@@ -341,7 +421,8 @@ def main():
     p.add_argument('--prefetch', type=int, default=3, help='Chunks parsed/encoded ahead on a loader thread; 0 disables it')
     p.add_argument('--training-only', dest='training_only', action='store_true', help='Use throughput-focused training mode (skip accuracy metrics)')
     p.add_argument('--full-metrics', dest='training_only', action='store_false', help='Compute full accuracy metrics during training')
-    p.set_defaults(amp=None, compile_model=False, chunk_on_device=None, training_only=True)
+    p.set_defaults(amp=None, compile_model=False, chunk_on_device=None, training_only=True,
+                   legal_mask=False, resume=True)
     args = p.parse_args()
 
     # ── Load move mapping ─────────────────────────────────────────────────
@@ -455,15 +536,39 @@ def main():
     # game, so a positional split would leak near-duplicates and inflate accuracy.
     holdout = []
     holdout_games = 0
-    if args.val_games > 0:
-        print(f"Reserving up to {args.val_games} games for validation...")
+    holdout_rows = 0
+    if args.val_games > 0 and args.val_fraction > 0:
+        print(f"Collecting up to {args.val_games} validation games "
+              f"({args.val_fraction:.1%} of the file, by game hash)...")
         sys.stdout.flush()
-        for x_c, y_c, v_c, n_g in read_game_chunks(args.pgn, args.chunk_size, move2idx):
-            holdout.append((x_c, y_c, v_c))
+        for x_c, y_c, v_c, m_c, n_g in read_game_chunks(
+                args.pgn, args.chunk_size, move2idx, split='val',
+                val_fraction=args.val_fraction, seed=args.seed,
+                legal_mask=args.legal_mask, n_moves=n_moves):
             holdout_games += n_g
-            if holdout_games >= args.val_games:
+            if x_c is not None and holdout_rows < args.val_max_positions:
+                room = args.val_max_positions - holdout_rows
+                if x_c.size(0) > room:
+                    x_c, y_c, v_c = x_c[:room], y_c[:room], v_c[:room]
+                    m_c = m_c[:room] if m_c is not None else None
+                # The encoding is strictly 0/1, so uint8 is lossless and cuts the
+                # resident set 4x.
+                holdout.append((x_c.to(torch.uint8), y_c, v_c, m_c))
+                holdout_rows += x_c.size(0)
+            if holdout_games >= args.val_games or holdout_rows >= args.val_max_positions:
                 break
-        print(f"Held out {holdout_games} games / {sum(t[0].size(0) for t in holdout)} positions")
+        print(f"Held out {holdout_games} games / {holdout_rows} positions")
+        sys.stdout.flush()
+
+    start_epoch = 0
+    resume_chunks = 0
+    if args.resume and os.path.exists(args.checkpoint_path):
+        st = load_resume_state(args.checkpoint_path, model, optimizer, device)
+        start_epoch = int(st.get('epoch', 0))
+        resume_chunks = int(st.get('chunks_done_in_epoch', 0))
+        _resumed = st
+        print(f"♻️ Resumed: epoch={start_epoch}, chunks_done={resume_chunks}, "
+              f"step={st.get('global_step', 0)}")
         sys.stdout.flush()
 
     global_step = 0
@@ -471,7 +576,11 @@ def main():
     best_model_path = os.path.splitext(args.model_path)[0] + '_best' + os.path.splitext(args.model_path)[1]
 
     # ── Chunked training over PGN ─────────────────────────────────────────
-    for epoch in range(args.epochs):
+    if args.resume and os.path.exists(args.checkpoint_path):
+        global_step = int(_resumed.get('global_step', 0))
+        best_val_loss = float(_resumed.get('best_val_loss', float('inf')))
+
+    for epoch in range(start_epoch, args.epochs):
         print(f"===== EPOCH {epoch+1}/{args.epochs} =====")
         sys.stdout.flush()
 
@@ -483,13 +592,24 @@ def main():
         chunk_idx = 0
 
         chunk_source = read_game_chunks(
-            args.pgn, args.chunk_size, move2idx, skip_games=holdout_games,
+            args.pgn, args.chunk_size, move2idx, split='train',
+            val_fraction=args.val_fraction, seed=args.seed,
+            legal_mask=args.legal_mask, n_moves=n_moves,
         )
+        skip_chunks = resume_chunks if epoch == start_epoch else 0
+        seen_chunks = 0
         wait_start = time.perf_counter()
-        for x_chunk, y_chunk, v_chunk, n_games in prefetch_iter(chunk_source, args.prefetch):
+        for x_chunk, y_chunk, v_chunk, m_chunk, n_games in prefetch_iter(chunk_source, args.prefetch):
                 # Parsing/encoding happens on the loader thread, so this is only
                 # the time we actually sat waiting for it.
                 prep_time = time.perf_counter() - wait_start
+                if x_chunk is None:      # chunk had no usable games
+                    wait_start = time.perf_counter()
+                    continue
+                seen_chunks += 1
+                if seen_chunks <= skip_chunks:   # already trained before the interruption
+                    wait_start = time.perf_counter()
+                    continue
                 chunk_idx += 1
 
                 # Pin host memory for faster H2D copies when batching from CPU tensors.
@@ -497,6 +617,8 @@ def main():
                     x_chunk = x_chunk.pin_memory()
                     y_chunk = y_chunk.pin_memory()
                     v_chunk = v_chunk.pin_memory()
+                    if m_chunk is not None:
+                        m_chunk = m_chunk.pin_memory()
 
                 x_chunk_dev = None
                 y_chunk_dev = None
@@ -529,6 +651,8 @@ def main():
                 for start in range(0, num_samples, batch_size):
                     batch_indices = indices[start:start + batch_size]
 
+                    mb = (m_chunk.index_select(0, batch_indices.cpu()).to(device)
+                          if m_chunk is not None else None)
                     if used_chunk_on_device:
                         xb = x_chunk_dev.index_select(0, batch_indices)
                         yb = y_chunk_dev.index_select(0, batch_indices)
@@ -554,7 +678,8 @@ def main():
                         # Support both (policy, value) and policy-only models
                         if isinstance(output, tuple):
                             logits, value_pred = output
-                            policy_loss = criterion(logits, yb)
+                            policy_loss = masked_policy_loss(
+                                logits, yb, mb, args.label_smoothing, criterion)
                             value_loss = nn.functional.mse_loss(value_pred.squeeze(-1), vb)
                             loss = policy_loss + args.value_weight * value_loss
                         else:
@@ -575,11 +700,11 @@ def main():
                         optimizer.step()
 
                     chunk_total += xb.size(0)
-                    chunk_loss_tensor += loss.detach()
+                    chunk_loss_tensor += loss.detach() * xb.size(0)
                     if not args.training_only:
                         with torch.no_grad():
-                            _, predicted = logits.max(1)
-                            chunk_correct_tensor += predicted.eq(yb).sum()
+                            scored = logits if mb is None else logits.masked_fill(~mb, float('-inf'))
+                            chunk_correct_tensor += scored.argmax(1).eq(yb).sum()
 
                 train_time = time.perf_counter() - train_start
                 chunk_loss = chunk_loss_tensor.item()
@@ -593,8 +718,8 @@ def main():
 
                 # Print progress every chunk
                 if chunk_idx % 10 == 0 or n_games < args.chunk_size:
-                    total_avg_loss = epoch_loss / max(epoch_batches, 1)
-                    chunk_avg_loss = chunk_loss / max(n_batches, 1)
+                    total_avg_loss = epoch_loss / max(epoch_total, 1)
+                    chunk_avg_loss = chunk_loss / max(chunk_total, 1)
                     pos_per_sec = chunk_total / max(train_time, 1e-9)
                     if args.training_only:
                         print(
@@ -623,8 +748,10 @@ def main():
                     sys.stdout.flush()
 
                 # Save checkpoint every 100 chunks
-                if chunk_idx % 100 == 0:
+                if args.checkpoint_every_chunks > 0 and chunk_idx % args.checkpoint_every_chunks == 0:
                     torch.save(model.state_dict(), args.model_path)
+                    save_resume_state(args.checkpoint_path, model, optimizer, epoch,
+                                      seen_chunks, global_step, best_val_loss, args)
                     print(f"💾 Checkpoint saved at chunk {chunk_idx}")
                     sys.stdout.flush()
 
@@ -633,7 +760,7 @@ def main():
         # End of epoch
         epoch_time = time.perf_counter() - epoch_start
         if epoch_total > 0:
-            avg_loss = epoch_loss / max(epoch_batches, 1)
+            avg_loss = epoch_loss / max(epoch_total, 1)
             pos_per_sec = epoch_total / max(epoch_time, 1e-9)
             if args.training_only:
                 print(
@@ -655,7 +782,8 @@ def main():
             print(f"Epoch {epoch+1}/{args.epochs} - No positions processed")
         sys.stdout.flush()
 
-        metrics = evaluate_holdout(model, holdout, device, criterion, batch_size, args.value_weight)
+        metrics = evaluate_holdout(model, holdout, device, criterion, batch_size,
+                                   args.value_weight, args.label_smoothing)
         if metrics is not None:
             print(
                 f"Validation | Loss: {metrics['loss']:.4f} | Policy: {metrics['policy']:.4f} | "
@@ -670,8 +798,11 @@ def main():
 
         # Save after each epoch
         torch.save(model.state_dict(), args.model_path)
+        save_resume_state(args.checkpoint_path, model, optimizer, epoch + 1, 0,
+                          global_step, best_val_loss, args)
         print(f"💾 Model saved to {args.model_path}")
         sys.stdout.flush()
+        resume_chunks = 0
 
     print(f"✅ Training complete! Model saved to '{args.model_path}'")
     if best_val_loss < float('inf'):

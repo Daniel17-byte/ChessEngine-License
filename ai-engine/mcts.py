@@ -35,6 +35,16 @@ def _add_dirichlet_noise(priors: dict, alpha=0.3, epsilon=0.25):
     }
 
 
+def _terminal_value(board: chess.Board) -> float:
+    """Valoarea unei poziții terminale din perspectiva jucătorului LA MUTARE.
+
+    Dacă e mat, cel la mutare a pierdut => -1. Orice altă terminare e remiză.
+    """
+    if board.is_checkmate():
+        return -1.0
+    return 0.0
+
+
 # ── MCTS Node ─────────────────────────────────────────────────────────────
 
 class _Node:
@@ -92,7 +102,7 @@ class MCTS:
     """
 
     def __init__(self, model, device, move_to_idx, idx_to_move, encode_fn,
-                 c_puct=1.5):
+                 c_puct=1.5, cache_size=200_000, reuse_tree=False):
         self.model = model
         self.device = device
         self.move_to_idx = move_to_idx
@@ -102,6 +112,58 @@ class MCTS:
 
         # Pre-allocate buffer for single-board inference
         self._buf = torch.zeros(1, 18, 8, 8, dtype=torch.float32)
+
+        # Profiling shows ~90% of search time is the network forward pass, and the
+        # same position recurs constantly both within one search and across moves
+        # of a game. Caching evaluations is the single cheapest win available.
+        self._cache = {}
+        self._cache_size = cache_size
+        self.cache_hits = 0
+        self.cache_misses = 0
+
+        # Optional tree reuse between consecutive moves of a game.
+        self.reuse_tree = reuse_tree
+        self._root = None
+        self._root_key = None
+
+        # model.eval() used to run on every evaluation, walking every submodule.
+        self.model.eval()
+
+    @staticmethod
+    def _position_key(board):
+        """Key covering exactly the fields the encoder reads.
+
+        Not board.fen(): that includes move counters the network never sees, which
+        would split cache entries that encode identically. Not _transposition_key()
+        either — it drops ep_square when no en-passant capture is legal, but the
+        encoder always writes an ep plane, so it would merge entries that differ.
+        """
+        return (board.pawns, board.knights, board.bishops, board.rooks,
+                board.queens, board.kings,
+                board.occupied_co[True], board.occupied_co[False],
+                board.turn, board.castling_rights, board.ep_square)
+
+    def clear_cache(self):
+        self._cache.clear()
+        self.cache_hits = 0
+        self.cache_misses = 0
+
+    def reset_tree(self):
+        """Drop the retained tree (call when starting a new game)."""
+        self._root = None
+        self._root_key = None
+
+    def advance(self, move):
+        """Descend the retained tree into `move`, keeping its accumulated stats."""
+        if not self.reuse_tree or self._root is None:
+            return
+        for child in self._root.children:
+            if child.move == move:
+                child.parent = None
+                self._root = child
+                self._root_key = None  # re-checked against the board on next search
+                return
+        self.reset_tree()
 
     def search(self, board: chess.Board, simulations: int = 200,
                add_noise: bool = True) -> chess.Move:
@@ -116,10 +178,7 @@ class MCTS:
         Returns:
             chess.Move — cea mai bună mutare găsită
         """
-        root = _Node()
-
-        # Evaluează root-ul și expandează
-        self._expand(root, board, add_noise=add_noise)
+        root = self._acquire_root(board, add_noise=add_noise)
 
         # Rulează simulări
         for _ in range(simulations):
@@ -135,17 +194,10 @@ class MCTS:
             if not sim_board.is_game_over():
                 value = self._expand(node, sim_board)
             else:
-                # Jocul s-a terminat — value exact
-                result = sim_board.result()
-                if result == '1-0':
-                    value = 1.0 if board.turn == chess.WHITE else -1.0
-                elif result == '0-1':
-                    value = -1.0 if board.turn == chess.WHITE else 1.0
-                else:
-                    value = 0.0
+                value = _terminal_value(sim_board)
 
             # 3. BACKPROPAGATE — propagă valoarea înapoi
-            self._backpropagate(node, value, board.turn)
+            self._backpropagate(node, value)
 
         # Alege mutarea cu cele mai multe vizite
         best = root.best_move_by_visits()
@@ -153,6 +205,36 @@ class MCTS:
             legal = list(board.legal_moves)
             return random.choice(legal) if legal else None
         return best
+
+    def _acquire_root(self, board: chess.Board, add_noise: bool = True) -> _Node:
+        """Return the root for this search, reusing the retained subtree if valid.
+
+        After `advance(move)` the retained node already carries visit counts from
+        the previous search, so those simulations are not repeated.
+        """
+        key = self._position_key(board)
+
+        if self.reuse_tree and self._root is not None:
+            if self._root_key is None or self._root_key == key:
+                root = self._root
+                self._root_key = key
+                if not root.is_expanded:
+                    self._expand(root, board, add_noise=add_noise)
+                elif add_noise:
+                    # Re-apply root exploration noise to the reused priors.
+                    priors = {c.move: c.prior for c in root.children}
+                    noisy = _add_dirichlet_noise(priors)
+                    for c in root.children:
+                        c.prior = noisy.get(c.move, c.prior)
+                return root
+            self.reset_tree()
+
+        root = _Node()
+        self._expand(root, board, add_noise=add_noise)
+        if self.reuse_tree:
+            self._root = root
+            self._root_key = key
+        return root
 
     def _expand(self, node: _Node, board: chess.Board,
                 add_noise: bool = False) -> float:
@@ -164,7 +246,7 @@ class MCTS:
         policy_probs, value = self._evaluate(board)
 
         # Adaugă noise la root
-        if add_noise and node.parent is None:
+        if add_noise:
             policy_probs = _add_dirichlet_noise(policy_probs)
 
         # Creează copiii
@@ -180,6 +262,13 @@ class MCTS:
         Rulează rețeaua pe o poziție.
         Returnează (policy_probs: dict[Move→float], value: float).
         """
+        key = self._position_key(board)
+        cached = self._cache.get(key)
+        if cached is not None:
+            self.cache_hits += 1
+            return cached
+        self.cache_misses += 1
+
         # Encode
         arr = self.encode_fn(board)
         buf = self._buf
@@ -187,7 +276,6 @@ class MCTS:
         buf_np[0] = arr
 
         # Inference
-        self.model.eval()
         with torch.inference_mode():
             inp = buf.to(self.device)
             output = self.model(inp)
@@ -202,7 +290,9 @@ class MCTS:
         # Softmax pe mutările legale
         legal_moves = list(board.legal_moves)
         if not legal_moves:
-            return {}, value
+            result = ({}, value)
+            self._store(key, result)
+            return result
 
         logits = policy_logits.squeeze(0).cpu()
         move_probs = {}
@@ -222,31 +312,33 @@ class MCTS:
             for m in move_probs:
                 move_probs[m] /= total
 
-        return move_probs, value
+        result = (move_probs, value)
+        self._store(key, result)
+        return result
 
-    def _backpropagate(self, node: _Node, value: float, root_turn):
-        """
-        Propagă valoarea înapoi prin arbore.
-        Alternează semnul la fiecare nivel (adversar vede opusul).
-        """
-        # Numărăm depth-ul pentru alternarea perspectivei
-        depth = 0
-        n = node
-        while n is not None:
-            depth += 1
-            n = n.parent
+    def _store(self, key, result):
+        if len(self._cache) >= self._cache_size:
+            self._cache.clear()  # cheap bounded-memory policy; hit rate recovers fast
+        self._cache[key] = result
 
+    def _backpropagate(self, node: _Node, value: float):
+        """Propagă valoarea înapoi prin arbore, alternând perspectiva.
+
+        Convenție: X.total_value acumulează valoarea din perspectiva jucătorului
+        care a mutat ÎN X (adică cel la mutare în X.parent). Doar așa are sens ca
+        `best_child` să maximizeze q_value-ul copiilor: părintele își alege mutarea
+        care e cea mai bună pentru EL.
+
+        `value` vine din perspectiva jucătorului la mutare în `node`, deci pentru
+        `node` însuși semnul se inversează.
+        """
         current = node
-        d = 0
+        sign = -1.0
         while current is not None:
             current.visit_count += 1
-            # Alternează: nodurile la adâncime pară sunt din perspectiva root
-            if d % 2 == 0:
-                current.total_value += value
-            else:
-                current.total_value -= value
+            current.total_value += sign * value
             current = current.parent
-            d += 1
+            sign = -sign
 
     def get_policy_and_value(self, board: chess.Board, simulations: int = 200):
         """
@@ -256,8 +348,7 @@ class MCTS:
         Returns:
             (move_visits: dict[Move→int], root_value: float)
         """
-        root = _Node()
-        self._expand(root, board, add_noise=True)
+        root = self._acquire_root(board)
 
         for _ in range(simulations):
             node = root
@@ -270,15 +361,9 @@ class MCTS:
             if not sim_board.is_game_over():
                 value = self._expand(node, sim_board)
             else:
-                result = sim_board.result()
-                if result == '1-0':
-                    value = 1.0 if board.turn == chess.WHITE else -1.0
-                elif result == '0-1':
-                    value = -1.0 if board.turn == chess.WHITE else 1.0
-                else:
-                    value = 0.0
+                value = _terminal_value(sim_board)
 
-            self._backpropagate(node, value, board.turn)
+            self._backpropagate(node, value)
 
         # Colectează visit counts
         move_visits = {}
@@ -287,6 +372,9 @@ class MCTS:
             move_visits[child.move] = child.visit_count
             total_visits += child.visit_count
 
-        root_value = root.q_value
+        # root.total_value e în perspectiva jucătorului care a mutat în root,
+        # adică adversarul celui la mutare — inversăm ca să returnăm valoarea
+        # din perspectiva jucătorului la mutare, cum se așteaptă apelantul.
+        root_value = -root.q_value
         return move_visits, root_value
 
