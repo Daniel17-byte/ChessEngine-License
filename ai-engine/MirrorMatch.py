@@ -1,38 +1,52 @@
+"""
+============================================================================
+  Mirror Match — AlphaZero-style self-play training
+============================================================================
+
+Fiecare mutare din self-play e aleasă de MCTS, iar rețeaua învață:
+
+  - policy: distribuția de vizite a MCTS (π), nu mutarea jucată. Căutarea e
+    mai bună decât rețeaua brută, deci π e un target *îmbunătățit* — asta e
+    ce face self-play-ul să progreseze.
+  - value:  rezultatul final al partidei (z), din perspectiva jucătorului
+    la mutare în poziția respectivă.
+
+Modelul nou înlocuiește `danibot.pth` doar dacă trece un meci de gating
+împotriva modelului curent. Fără gating, self-play-ul poate regresa liniștit.
+
+Varianta veche clona mutările învingătorului (behavioral cloning). La nivelul
+ăsta învingătorul câștigă pentru că adversarul dă blunder, deci învăța mutări
+mediocre etichetate drept bune, iar capul de valoare nu primea niciun target.
+============================================================================
+"""
+
+import argparse
+import copy
+import json
+import math
+import os
+import random
+import sys
+import time
+from collections import Counter, deque
+
+import chess
+import numpy as np
 import torch
 import torch.nn as nn
-import torch.nn.utils
-import sys
-import json
-import argparse
-from collections import Counter
-import random
-import chess
-import time
+import torch.nn.functional as F
 
-from ChessAI import ChessAI
+from ArchiveAlpha import encode_board_array
+from ChessNet import ChessNet
+from mcts import MCTS
 from TrainingGame import TrainingGame
-from ArchiveAlpha import encode_board
 
-# Try to import Cython batch encoding
-try:
-    from fastgame.board_encode import encode_board_batch as cy_encode_board_batch
-    HAS_BATCH_ENCODE = True
-except ImportError:
-    cy_encode_board_batch = None
-    HAS_BATCH_ENCODE = False
-
-# Try to import Cython fast training loop
-try:
-    from fastgame.fast_training_loop import play_games_fast as cy_play_games_fast
-    HAS_FAST_LOOP = True
-except ImportError:
-    cy_play_games_fast = None
-    HAS_FAST_LOOP = False
-
-# Load move mapping
 with open('move_mapping.json', 'r', encoding='utf-8') as f:
     move_list = json.load(f)
 move_to_idx = {m: i for i, m in enumerate(move_list)}
+N_MOVES = len(move_list)
+
+RESULT_VALUE = {'1-0': 1.0, '0-1': -1.0, '1/2-1/2': 0.0}
 
 
 def print_status(epoch, max_epochs, loss, winner, stats):
@@ -54,346 +68,461 @@ def print_status(epoch, max_epochs, loss, winner, stats):
     sys.stdout.flush()
 
 
-def play_games(
-    ai_white,
-    ai_black,
-    game,
-    fen_positions,
-    num_games,
-    policy_top_n=3,
-    policy_sample_k=2,
-    exploration_epsilon=0.20,
-    random_opening_plies=6,
-    draw_sample_ratio=0.15,
-    cpu_model=None,
-):
-    """Play N games and collect (board_state, move) samples from self-play.
-
-    Uses Cython fast loop + batch encoding when available for ~3-5x speedup.
-    Falls back to pure Python otherwise.
-    """
-    # ── Fast path: Cython batch play + batch encode ──────────────────────
-    if HAS_FAST_LOOP and HAS_BATCH_ENCODE:
-        states_np, moves_list, stats = cy_play_games_fast(
-            ai_white, ai_black, game, fen_positions,
-            num_games=num_games,
-            policy_top_n=policy_top_n,
-            policy_sample_k=policy_sample_k,
-            exploration_epsilon=exploration_epsilon,
-            random_opening_plies=random_opening_plies,
-            draw_sample_ratio=draw_sample_ratio,
-            move_to_idx=move_to_idx,
-            encode_batch_fn=cy_encode_board_batch,
-            cpu_model=cpu_model,
-        )
-        if states_np is not None and len(moves_list) > 0:
-            # Return full tensor directly — training loop detects this and skips torch.stack
-            samples_states = torch.from_numpy(states_np)
-            samples_moves = moves_list
-        else:
-            samples_states = []
-            samples_moves = []
-        return samples_states, samples_moves, stats
-
-    # ── Slow fallback: per-move encoding ─────────────────────────────────
-    return _play_games_python(
-        ai_white, ai_black, game, fen_positions, num_games,
-        policy_top_n, policy_sample_k, exploration_epsilon,
-        random_opening_plies, draw_sample_ratio,
-        cpu_model=cpu_model,
-    )
-
-
-def _play_games_python(
-    ai_white, ai_black, game, fen_positions, num_games,
-    policy_top_n, policy_sample_k, exploration_epsilon,
-    random_opening_plies, draw_sample_ratio,
-    cpu_model=None,
-):
-    """Pure Python fallback for play_games."""
-    samples_states = []
-    samples_moves = []
-    stats = Counter()
-
-    for g in range(num_games):
-        if fen_positions:
-            fen = random.choice(fen_positions)
-            game.reset_from_fen(fen)
-        else:
-            game.reset()
-
-        white_history = []
-        black_history = []
-        ply_count = 0
-
-        ai_white.model.eval()
-        pred_cache_white = {}
-        pred_cache_black = {}
-        move_cache_white = {}
-        move_cache_black = {}
-
-        while not game.is_game_over():
-            ply_count += 1
-            is_white_turn = game.board.turn == chess.WHITE
-            current_ai = ai_white if is_white_turn else ai_black
-
-            legal_moves = list(game.board.legal_moves)
-            if not legal_moves:
-                break
-
-            if ply_count <= random_opening_plies or random.random() < exploration_epsilon:
-                move = random.choice(legal_moves)
-            else:
-                pred_cache = pred_cache_white if is_white_turn else pred_cache_black
-                move_cache = move_cache_white if is_white_turn else move_cache_black
-                move = current_ai.get_fast_move_from_model(
-                    game.board,
-                    top_n=policy_top_n,
-                    sample_top_k=policy_sample_k,
-                    prediction_cache=pred_cache,
-                    move_cache=move_cache,
-                    cpu_model=cpu_model,
-                )
-                if move is None:
-                    move = random.choice(legal_moves)
-
-            move_idx = move_to_idx.get(move.uci())
-            if move_idx is not None:
-                board_tensor = encode_board(game.board)
-                if is_white_turn:
-                    white_history.append((board_tensor, move_idx))
-                else:
-                    black_history.append((board_tensor, move_idx))
-
-            success, _ = game.make_move_fast(move)
-            if not success:
-                break
-
-        result = game.get_result()
-        stats[result] += 1
-
-        if result == '1-0':
-            samples_states.extend([s for s, _ in white_history])
-            samples_moves.extend([m for _, m in white_history])
-            if black_history:
-                half = max(1, len(black_history) // 2)
-                sampled = random.sample(black_history, half)
-                samples_states.extend([s for s, _ in sampled])
-                samples_moves.extend([m for _, m in sampled])
-        elif result == '0-1':
-            samples_states.extend([s for s, _ in black_history])
-            samples_moves.extend([m for _, m in black_history])
-            if white_history:
-                half = max(1, len(white_history) // 2)
-                sampled = random.sample(white_history, half)
-                samples_states.extend([s for s, _ in sampled])
-                samples_moves.extend([m for _, m in sampled])
-        else:
-            # Draws dominate in symmetric self-play; train on a smaller random subset.
-            if white_history:
-                keep_w = max(1, int(len(white_history) * draw_sample_ratio))
-                sampled_w = random.sample(white_history, min(keep_w, len(white_history)))
-                samples_states.extend([s for s, _ in sampled_w])
-                samples_moves.extend([m for _, m in sampled_w])
-            if black_history:
-                keep_b = max(1, int(len(black_history) * draw_sample_ratio))
-                sampled_b = random.sample(black_history, min(keep_b, len(black_history)))
-                samples_states.extend([s for s, _ in sampled_b])
-                samples_moves.extend([m for _, m in sampled_b])
-
-    return samples_states, samples_moves, stats
-
-
-def main():
-    parser = argparse.ArgumentParser(description='Mirror Match Training for Chess AI')
-    parser.add_argument('--epochs', type=int, default=5, help='Number of training epochs')
-    parser.add_argument('--games-per-epoch', type=int, default=200, help='Games to play per epoch')
-    parser.add_argument('--batch-size', type=int, default=512, help='Training batch size')
-    parser.add_argument('--policy-top-n', type=int, default=3, help='Top-N legal policy moves considered')
-    parser.add_argument('--policy-sample-k', type=int, default=2, help='Sample uniformly from top-K policy moves')
-    parser.add_argument('--exploration-epsilon', type=float, default=0.20, help='Probability of random move during self-play')
-    parser.add_argument('--random-opening-plies', type=int, default=6, help='Number of opening plies forced random for diversity')
-    parser.add_argument('--draw-sample-ratio', type=float, default=0.15, help='Fraction of draw moves kept for training')
-    args = parser.parse_args()
-
-    training_start_perf = time.perf_counter()
-    print(json.dumps({
-        "status": "training_start",
-        "epochs": args.epochs,
-        "strategy": "model",
-        "fen_type": "from_scratch",
-        "cython_fast_loop": HAS_FAST_LOOP,
-        "cython_batch_encode": HAS_BATCH_ENCODE,
-        "policy_top_n": args.policy_top_n,
-        "policy_sample_k": args.policy_sample_k,
-        "exploration_epsilon": args.exploration_epsilon,
-        "random_opening_plies": args.random_opening_plies,
-        "draw_sample_ratio": args.draw_sample_ratio
-    }))
+def emit(**payload):
+    print(json.dumps(payload))
     sys.stdout.flush()
 
-    # --- Two AI instances with identical model weights ---
-    ai_white = ChessAI(is_white=True, default_strategy='model', load_model_from_disk=True)
-    ai_black = ChessAI(is_white=False, default_strategy='model', load_model_from_disk=False)
-    ai_black.model.load_state_dict(ai_white.model.state_dict())
-    ai_black.model.to(ai_black.device)
-    ai_black.model.eval()
-    device = ai_white.device
 
-    # Create a CPU copy of the model for fast self-play inference.
-    # MPS/CUDA device transfers for batch=1 are slower than CPU-only inference.
-    # JIT tracing eliminates Python nn.Module overhead (~225K __getattr__ calls).
-    import copy
-    cpu_model = copy.deepcopy(ai_white.model).cpu().eval()
-    for p in cpu_model.parameters():
-        p.requires_grad_(False)
-    try:
-        dummy_input = torch.zeros(1, 18, 8, 8, dtype=torch.float32)
-        cpu_model = torch.jit.trace(cpu_model, dummy_input)
-        cpu_model = torch.jit.freeze(cpu_model)
-        # Warm up the JIT
-        for _ in range(3):
-            cpu_model(dummy_input)
-        print(json.dumps({"info": "CPU model JIT traced + frozen for fast self-play"}))
-    except Exception as e:
-        print(json.dumps({"warning": f"JIT trace failed, using eager mode: {e}"}))
-    sys.stdout.flush()
+# ── model helpers ────────────────────────────────────────────────────────────
 
-    game = TrainingGame()
-    all_stats = Counter()
-
-    optimizer = torch.optim.Adam(ai_white.model.parameters(), lr=1e-3, weight_decay=1e-5)
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs, eta_min=1e-5)
-    criterion = nn.CrossEntropyLoss()
-
-    # Always from scratch in mirror-match training.
-    fen_positions = []
-
-    for epoch in range(args.epochs):
-        # Keep black instance synchronized with the current white model snapshot.
-        ai_black.model.load_state_dict(ai_white.model.state_dict())
-        ai_black.model.eval()
-
-        # Sync CPU model for fast self-play inference (re-trace JIT)
-        cpu_model_eager = copy.deepcopy(ai_white.model).cpu().eval()
-        for p in cpu_model_eager.parameters():
-            p.requires_grad_(False)
+def load_model(path, device):
+    model = ChessNet(N_MOVES)
+    if path and os.path.exists(path):
         try:
-            dummy_input = torch.zeros(1, 18, 8, 8, dtype=torch.float32)
-            cpu_model = torch.jit.trace(cpu_model_eager, dummy_input)
-            cpu_model = torch.jit.freeze(cpu_model)
-            cpu_model(dummy_input)  # warm up
-        except Exception:
-            cpu_model = cpu_model_eager
+            model.load_state_dict(torch.load(path, map_location='cpu'))
+        except (RuntimeError, KeyError) as exc:
+            emit(warning=f"could not load {path}: {exc}; starting from scratch")
+    return model.to(device).eval()
 
-        # --- Phase 1: Play games, collect winning moves ---
-        epoch_play_start = time.perf_counter()
-        states, moves, stats = play_games(
-            ai_white, ai_black, game, fen_positions,
-            num_games=args.games_per_epoch,
-            policy_top_n=args.policy_top_n,
-            policy_sample_k=args.policy_sample_k,
-            exploration_epsilon=args.exploration_epsilon,
-            random_opening_plies=args.random_opening_plies,
-            draw_sample_ratio=args.draw_sample_ratio,
-            cpu_model=cpu_model,
-        )
-        epoch_play_time = time.perf_counter() - epoch_play_start
-        all_stats += stats
 
-        if len(states) == 0:
-            print(json.dumps({"warning": f"Epoch {epoch+1}: no training samples collected"}))
-            sys.stdout.flush()
+def value_head_is_dead(model, samples=120, tol=1e-6):
+    """True when the value head returns a constant for every position.
+
+    A network trained with all-zero value targets outputs exactly 0 everywhere.
+    MCTS then evaluates every leaf as a draw and degenerates into resampling the
+    policy priors, so self-play built on it cannot improve anything.
+    """
+    board = chess.Board()
+    values = []
+    with torch.inference_mode():
+        for _ in range(samples):
+            legal = list(board.legal_moves)
+            if not legal or board.is_game_over():
+                board = chess.Board()
+                continue
+            board.push(random.choice(legal))
+            x = torch.from_numpy(encode_board_array(board)).unsqueeze(0)
+            _, v = model(x)
+            values.append(v.item())
+    if len(values) < 2:
+        return False
+    return float(np.std(values)) < tol
+
+
+def freeze_for_inference(model):
+    """Return a JIT-frozen, inference-only copy of `model`.
+
+    Measured ~1.23x over eager on this network with identical outputs (conv+BN
+    fusion only). The result cannot be trained, so self-play and gating run on a
+    frozen snapshot while the eager `candidate` keeps training.
+    """
+    snapshot = copy.deepcopy(model).cpu().eval()
+    for param in snapshot.parameters():
+        param.requires_grad_(False)
+    try:
+        with torch.inference_mode():
+            example = torch.zeros(1, 18, 8, 8)
+            traced = torch.jit.freeze(torch.jit.trace(snapshot, example))
+            traced(example)  # warm up
+        return traced
+    except Exception as exc:
+        emit(warning=f"JIT freeze failed, using eager model: {exc}")
+        return snapshot
+
+
+def make_mcts(model, reuse_tree=False):
+    """Search helper.
+
+    ~90% of search time is the forward pass, so the evaluation cache is what makes
+    MCTS self-play affordable (measured 1.36x on a fixed 30-ply line).
+
+    Tree reuse defaults to off: it is *not* a speedup. Retaining the tree pushes
+    the search into deeper, fresher positions, which drops the cache hit rate from
+    28% to 8.5% and costs ~20% more per move. It buys search quality (visits
+    accumulate across moves) rather than throughput, so it is opt-in.
+    """
+    return MCTS(model, torch.device('cpu'), move_to_idx, move_list,
+                encode_board_array, reuse_tree=reuse_tree)
+
+
+# ── self-play ────────────────────────────────────────────────────────────────
+
+def visits_to_policy(visits, temperature):
+    """Turn MCTS visit counts into a target distribution over the move mapping."""
+    idxs, counts = [], []
+    for move, count in visits.items():
+        idx = move_to_idx.get(move.uci())
+        if idx is not None and count > 0:
+            idxs.append(idx)
+            counts.append(float(count))
+    if not idxs:
+        return None, None
+    counts = np.asarray(counts, dtype=np.float64)
+    if temperature <= 1e-3:
+        probs = np.zeros_like(counts)
+        probs[int(counts.argmax())] = 1.0
+    else:
+        scaled = counts ** (1.0 / temperature)
+        probs = scaled / scaled.sum()
+    return np.asarray(idxs, dtype=np.int64), probs.astype(np.float32)
+
+
+def play_selfplay_game(mcts, game, simulations, opening_plies, temp_moves,
+                       max_plies, fen_positions=None):
+    """One self-play game. Returns (samples, result).
+
+    A sample is (encoded_board, move_indices, target_probs, side_to_move).
+    The value target is filled in once the game ends.
+    """
+    if fen_positions:
+        game.reset_from_fen(random.choice(fen_positions))
+    else:
+        game.reset()
+
+    mcts.reset_tree()
+    samples = []
+    ply = 0
+
+    while not game.is_game_over() and ply < max_plies:
+        board = game.board
+        legal = list(board.legal_moves)
+        if not legal:
+            break
+
+        # Random opening plies purely for diversity; not used as training targets,
+        # since a random move is not something we want the policy to imitate.
+        if ply < opening_plies:
+            move = random.choice(legal)
+            ok, _ = game.make_move_fast(move)
+            if not ok:
+                break
+            mcts.advance(move)
+            ply += 1
             continue
 
-        # Track decisive-game rate to catch collapse back into all-draw self-play.
-        decisive = stats.get('1-0', 0) + stats.get('0-1', 0)
-        games_played = sum(stats.values())
-        print(json.dumps({
-            "epoch": epoch + 1,
-            "games_played": games_played,
-            "decisive_games": decisive,
-            "draws": stats.get('1/2-1/2', 0),
-            "play_time_s": round(epoch_play_time, 2),
-            "games_per_sec": round(games_played / max(epoch_play_time, 1e-9), 2),
-            "samples_collected": len(states),
-        }))
-        sys.stdout.flush()
+        visits, _ = mcts.get_policy_and_value(board, simulations=simulations)
+        if not visits:
+            move = random.choice(legal)
+            ok, _ = game.make_move_fast(move)
+            if not ok:
+                break
+            mcts.advance(move)
+            ply += 1
+            continue
 
-        # --- Phase 2: Batch train on collected samples ---
-        if isinstance(states, torch.Tensor):
-            states_tensor = states.contiguous()
+        # τ=1 early keeps games diverse; τ→0 later makes play sharp.
+        temperature = 1.0 if ply < opening_plies + temp_moves else 0.0
+        idxs, probs = visits_to_policy(visits, temperature)
+        if idxs is not None:
+            samples.append((
+                encode_board_array(board).copy(),
+                idxs,
+                probs,
+                board.turn,
+            ))
+
+        # Sample the actual move from the visit counts (τ=1) or take the max (τ=0).
+        moves = list(visits.keys())
+        counts = np.asarray([visits[m] for m in moves], dtype=np.float64)
+        if temperature > 1e-3 and counts.sum() > 0:
+            move = moves[int(np.random.choice(len(moves), p=counts / counts.sum()))]
         else:
-            states_tensor = torch.stack(states).contiguous()
-        moves_tensor = torch.tensor(moves, dtype=torch.long) if not isinstance(moves, torch.Tensor) else moves
+            move = moves[int(counts.argmax())]
 
-        ai_white.model.train()
-        total_loss = 0.0
-        num_samples = states_tensor.size(0)
-        n_batches = (num_samples + args.batch_size - 1) // args.batch_size
-        indices = torch.randperm(num_samples)
+        ok, _ = game.make_move_fast(move)
+        if not ok:
+            break
+        mcts.advance(move)
+        ply += 1
 
-        for batch_idx, start in enumerate(range(0, num_samples, args.batch_size), start=1):
-            batch_indices = indices[start:start + args.batch_size]
-            X = states_tensor.index_select(0, batch_indices).to(device, non_blocking=(device.type == "cuda"))
-            y = moves_tensor.index_select(0, batch_indices).to(device, non_blocking=(device.type == "cuda"))
+    result = game.get_result()
+    if result not in RESULT_VALUE:
+        result = '1/2-1/2'
+
+    z_white = RESULT_VALUE[result]
+    finished = [
+        (x, idxs, probs, z_white if turn == chess.WHITE else -z_white)
+        for x, idxs, probs, turn in samples
+    ]
+    return finished, result
+
+
+# ── gating match ─────────────────────────────────────────────────────────────
+
+def play_match_game(mcts_a, mcts_b, game, simulations, a_is_white, opening_plies,
+                    max_plies):
+    """One deterministic game between two searchers. Returns the result string."""
+    game.reset()
+    mcts_a.reset_tree()
+    mcts_b.reset_tree()
+    ply = 0
+    while not game.is_game_over() and ply < max_plies:
+        board = game.board
+        legal = list(board.legal_moves)
+        if not legal:
+            break
+        if ply < opening_plies:
+            move = random.choice(legal)
+        else:
+            white_to_move = board.turn == chess.WHITE
+            searcher = mcts_a if (white_to_move == a_is_white) else mcts_b
+            move = searcher.search(board, simulations=simulations, add_noise=False)
+            if move is None:
+                move = random.choice(legal)
+        ok, _ = game.make_move_fast(move)
+        if not ok:
+            break
+        mcts_a.advance(move)
+        mcts_b.advance(move)
+        ply += 1
+    result = game.get_result()
+    return result if result in RESULT_VALUE else '1/2-1/2'
+
+
+def gating_match(candidate, champion, games, simulations, opening_plies, max_plies,
+                 reuse_tree=False):
+    """Score the candidate against the champion. Returns (score, wins, draws, losses).
+
+    Score counts a draw as half a point, so 0.5 means "no better than the
+    incumbent". Colors alternate so an opening advantage cannot decide it.
+    """
+    mcts_c = make_mcts(freeze_for_inference(candidate), reuse_tree=reuse_tree)
+    mcts_h = make_mcts(freeze_for_inference(champion), reuse_tree=reuse_tree)
+    game = TrainingGame()
+    wins = draws = losses = 0
+
+    for i in range(games):
+        cand_is_white = (i % 2 == 0)
+        result = play_match_game(mcts_c, mcts_h, game, simulations, cand_is_white,
+                                 opening_plies, max_plies)
+        if result == '1/2-1/2':
+            draws += 1
+        elif (result == '1-0') == cand_is_white:
+            wins += 1
+        else:
+            losses += 1
+        emit(gating_progress={"played": i + 1, "of": games,
+                              "w": wins, "d": draws, "l": losses})
+
+    score = (wins + 0.5 * draws) / max(games, 1)
+    return score, wins, draws, losses
+
+
+# ── training ─────────────────────────────────────────────────────────────────
+
+def train_on_buffer(model, optimizer, buffer, batch_size, device, value_weight,
+                    grad_clip, epochs_over_buffer=1):
+    """Policy = cross-entropy against the MCTS visit distribution; value = MSE vs z."""
+    model.train()
+    n = len(buffer)
+    if n == 0:
+        return 0.0, 0.0, 0.0, 0
+
+    total = policy_total = value_total = 0.0
+    batches = 0
+    data = list(buffer)
+
+    for _ in range(epochs_over_buffer):
+        random.shuffle(data)
+        for start in range(0, n, batch_size):
+            chunk = data[start:start + batch_size]
+            bs = len(chunk)
+
+            x = torch.from_numpy(np.stack([c[0] for c in chunk])).to(device)
+            z = torch.tensor([c[3] for c in chunk], dtype=torch.float32, device=device)
+
+            # Dense target built from the sparse visit distribution.
+            pi = torch.zeros(bs, N_MOVES, device=device)
+            for row, (_, idxs, probs, _) in enumerate(chunk):
+                pi[row, torch.from_numpy(idxs).to(device)] = torch.from_numpy(probs).to(device)
+
+            logits, value_pred = model(x)
+            log_probs = F.log_softmax(logits, dim=1)
+            policy_loss = -(pi * log_probs).sum(dim=1).mean()
+            value_loss = F.mse_loss(value_pred.squeeze(-1), z)
+            loss = policy_loss + value_weight * value_loss
 
             optimizer.zero_grad(set_to_none=True)
-            # ChessNet returns (policy_logits, value); only the policy head is
-            # supervised here, since self-play samples carry no value target.
-            logits, _ = ai_white.model(X)
-            loss = criterion(logits, y)
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(ai_white.model.parameters(), 1.0)
+            if grad_clip > 0:
+                nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
             optimizer.step()
 
-            total_loss += loss.item()
+            total += loss.item()
+            policy_total += policy_loss.item()
+            value_total += value_loss.item()
+            batches += 1
 
-            if batch_idx % 5 == 0 or batch_idx == n_batches:
-                print(
-                    f"Batch {batch_idx}/{n_batches} | "
-                    f"Loss: {loss.item():.4f} | "
-                    f"Avg Loss: {total_loss / batch_idx:.4f}"
-                )
-                sys.stdout.flush()
+    model.eval()
+    b = max(batches, 1)
+    return total / b, policy_total / b, value_total / b, batches
 
-        scheduler.step()
-        avg_loss = total_loss / max(n_batches, 1)
 
-        # Report the epoch's dominant outcome. stats is a Counter, so its key
-        # order is insertion order, not "the last game played".
-        top_result = stats.most_common(1)[0][0] if stats else '*'
-        winner = "White" if top_result == "1-0" else "Black" if top_result == "0-1" else "Draw"
+# ── main ─────────────────────────────────────────────────────────────────────
 
+def main():
+    parser = argparse.ArgumentParser(description='AlphaZero-style self-play training')
+    parser.add_argument('--epochs', type=int, default=5, help='Self-play + train iterations')
+    parser.add_argument('--games-per-epoch', type=int, default=50, help='Self-play games per epoch')
+    parser.add_argument('--batch-size', type=int, default=64, help='Training batch size')
+    parser.add_argument('--simulations', type=int, default=64, help='MCTS simulations per move')
+    parser.add_argument('--lr', type=float, default=2e-4, help='Learning rate')
+    parser.add_argument('--value-weight', type=float, default=1.0, help='Weight of the value loss')
+    parser.add_argument('--grad-clip', type=float, default=1.0, help='Gradient norm clip; <=0 disables')
+    parser.add_argument('--buffer-size', type=int, default=100_000, help='Replay buffer positions')
+    parser.add_argument('--passes-per-epoch', type=int, default=1, help='Passes over the replay buffer per epoch')
+    parser.add_argument('--temp-moves', type=int, default=20, help='Plies sampled at temperature 1 before going greedy')
+    parser.add_argument('--max-plies', type=int, default=200, help='Ply cap per game')
+    parser.add_argument('--model-path', default='danibot.pth', help='Champion model (only replaced after gating)')
+    parser.add_argument('--gating-games', type=int, default=20, help='Games in the promotion match; 0 disables gating')
+    parser.add_argument('--gating-threshold', type=float, default=0.55, help='Score the candidate must beat to be promoted')
+    parser.add_argument('--gating-simulations', type=int, default=None, help='MCTS sims during gating (defaults to --simulations)')
+    parser.add_argument('--threads', type=int, default=None,
+                        help='torch CPU threads for search (default: min(4, cores); more hurts batch-1 inference)')
+    parser.add_argument('--reuse-tree', action='store_true',
+                        help='Retain the MCTS tree between moves: better search quality, ~20%% slower per move')
+    parser.add_argument('--allow-dead-value-head', action='store_true',
+                        help='Run even if the value head is constant (self-play will not improve anything)')
+
+    # Accepted for backwards compatibility with app.py; unused by MCTS self-play.
+    parser.add_argument('--policy-top-n', type=int, default=3, help=argparse.SUPPRESS)
+    parser.add_argument('--policy-sample-k', type=int, default=2, help=argparse.SUPPRESS)
+    parser.add_argument('--exploration-epsilon', type=float, default=0.20, help=argparse.SUPPRESS)
+    parser.add_argument('--random-opening-plies', type=int, default=6, help='Random plies at the start of each game, for diversity')
+    parser.add_argument('--draw-sample-ratio', type=float, default=0.15, help=argparse.SUPPRESS)
+    args = parser.parse_args()
+
+    if args.gating_simulations is None:
+        args.gating_simulations = args.simulations
+
+    # Batch-1 convolutions do not scale with threads; 8 threads measured slower
+    # than 4 on this network.
+    threads = args.threads if args.threads else min(4, os.cpu_count() or 1)
+    torch.set_num_threads(max(1, threads))
+
+    start_perf = time.perf_counter()
+    emit(status="training_start", epochs=args.epochs, strategy="mcts_selfplay",
+         fen_type="from_scratch", simulations=args.simulations, threads=threads,
+         reuse_tree=args.reuse_tree,
+         games_per_epoch=args.games_per_epoch, gating_games=args.gating_games,
+         gating_threshold=args.gating_threshold, buffer_size=args.buffer_size,
+         random_opening_plies=args.random_opening_plies)
+
+    device = torch.device('cpu')  # single-position MCTS inference is fastest on CPU
+
+    champion = load_model(args.model_path, device)
+
+    if value_head_is_dead(champion):
+        msg = ("value head is constant (all-zero targets during supervised training). "
+               "MCTS evaluates every leaf as a draw, so self-play cannot improve the "
+               "model. Retrain with a Result column first: "
+               "python scripts/pgn_to_fen_move_csv.py --skip-unfinished, then "
+               "python train_csv_danibot.py --csv <that csv>.")
+        if not args.allow_dead_value_head:
+            emit(status="aborted", error=msg)
+            sys.exit(2)
+        emit(warning=msg + " Continuing anyway because --allow-dead-value-head was set.")
+
+    # The candidate trains; the champion stays frozen as the gating opponent.
+    candidate = ChessNet(N_MOVES).to(device)
+    candidate.load_state_dict(champion.state_dict())
+
+    optimizer = torch.optim.Adam(candidate.parameters(), lr=args.lr, weight_decay=1e-5)
+    buffer = deque(maxlen=args.buffer_size)
+    game = TrainingGame()
+    all_stats = Counter()
+    promotions = 0
+
+    for epoch in range(args.epochs):
+        # Self-play runs on a frozen snapshot of the candidate; the eager
+        # `candidate` is what the optimizer updates below.
+        mcts = make_mcts(freeze_for_inference(candidate), reuse_tree=args.reuse_tree)
+        play_start = time.perf_counter()
+        epoch_stats = Counter()
+        new_samples = 0
+
+        for _ in range(args.games_per_epoch):
+            samples, result = play_selfplay_game(
+                mcts, game,
+                simulations=args.simulations,
+                opening_plies=args.random_opening_plies,
+                temp_moves=args.temp_moves,
+                max_plies=args.max_plies,
+            )
+            buffer.extend(samples)
+            new_samples += len(samples)
+            epoch_stats[result] += 1
+
+        all_stats += epoch_stats
+        play_time = time.perf_counter() - play_start
+
+        emit(epoch_selfplay=epoch + 1,
+             games_played=sum(epoch_stats.values()),
+             decisive_games=epoch_stats['1-0'] + epoch_stats['0-1'],
+             draws=epoch_stats['1/2-1/2'],
+             new_samples=new_samples,
+             buffer=len(buffer),
+             play_time_s=round(play_time, 2),
+             games_per_sec=round(sum(epoch_stats.values()) / max(play_time, 1e-9), 3))
+
+        if new_samples == 0:
+            emit(warning=f"epoch {epoch + 1}: no samples collected")
+            continue
+
+        avg_loss, p_loss, v_loss, batches = train_on_buffer(
+            candidate, optimizer, buffer, args.batch_size, device,
+            args.value_weight, args.grad_clip, args.passes_per_epoch,
+        )
+        emit(epoch_train=epoch + 1, batches=batches, loss=round(avg_loss, 4),
+             policy_loss=round(p_loss, 4), value_loss=round(v_loss, 4))
+
+        top = epoch_stats.most_common(1)[0][0] if epoch_stats else '*'
+        winner = "White" if top == '1-0' else "Black" if top == '0-1' else "Draw"
         print_status(epoch + 1, args.epochs, avg_loss, winner, all_stats)
 
-        if (epoch + 1) % 10 == 0:
-            torch.save(ai_white.model.state_dict(), "danibot.pth")
-            print(json.dumps({"status": "model_saved", "epoch": epoch + 1}))
-            sys.stdout.flush()
+        # ── Gating: only promote a candidate that actually plays better ──────
+        if args.gating_games > 0:
+            gate_start = time.perf_counter()
+            score, w, d, l = gating_match(
+                candidate, champion,
+                games=args.gating_games,
+                simulations=args.gating_simulations,
+                opening_plies=args.random_opening_plies,
+                max_plies=args.max_plies,
+                reuse_tree=args.reuse_tree,
+            )
+            promoted = score >= args.gating_threshold
+            emit(epoch_gating=epoch + 1, score=round(score, 4), wins=w, draws=d,
+                 losses=l, threshold=args.gating_threshold, promoted=promoted,
+                 gating_time_s=round(time.perf_counter() - gate_start, 2))
 
-    torch.save(ai_white.model.state_dict(), "danibot.pth")
-    duration_seconds = time.perf_counter() - training_start_perf
-    total_games_played = sum(all_stats.values())
-    games_per_second = total_games_played / max(duration_seconds, 1e-9)
-    print(json.dumps({
-        "status": "training_complete",
-        "total_epochs": args.epochs,
-        "duration_seconds": round(duration_seconds, 2),
-        "duration_minutes": round(duration_seconds / 60.0, 2),
-        "games_played_total": int(total_games_played),
-        "games_per_second": round(games_per_second, 2),
-        "cython_fast_loop": HAS_FAST_LOOP,
-        "cython_batch_encode": HAS_BATCH_ENCODE,
-    }))
-    sys.stdout.flush()
+            if promoted:
+                torch.save(candidate.state_dict(), args.model_path)
+                champion.load_state_dict(candidate.state_dict())
+                promotions += 1
+                emit(status="model_saved", epoch=epoch + 1, reason="passed_gating",
+                     score=round(score, 4))
+            else:
+                # Roll the candidate back so a bad iteration cannot compound.
+                candidate.load_state_dict(champion.state_dict())
+                emit(status="model_rejected", epoch=epoch + 1, score=round(score, 4))
+        else:
+            torch.save(candidate.state_dict(), args.model_path)
+            champion.load_state_dict(candidate.state_dict())
+            promotions += 1
+            emit(status="model_saved", epoch=epoch + 1, reason="gating_disabled")
 
-    # Cleanup
-    if hasattr(ai_white, 'engine') and ai_white.engine:
-        ai_white.engine.quit()
-    if hasattr(ai_black, 'engine') and ai_black.engine:
-        ai_black.engine.quit()
+    duration = time.perf_counter() - start_perf
+    total_games = sum(all_stats.values())
+    emit(status="training_complete",
+         total_epochs=args.epochs,
+         duration_seconds=round(duration, 2),
+         duration_minutes=round(duration / 60.0, 2),
+         games_played_total=total_games,
+         games_per_second=round(total_games / max(duration, 1e-9), 3),
+         promotions=promotions,
+         model_path=args.model_path)
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()
